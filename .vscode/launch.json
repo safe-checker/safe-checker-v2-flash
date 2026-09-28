@@ -1,0 +1,43 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "DeepSeek Flash 安全检测",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/safety_check.py",
+      "console": "integratedTerminal",
+      "args": [
+        "${input:imagePath}",
+        "--scene",
+        "${input:scene}"
+      ]
+    },
+    {
+      "name": "Dry Run 检查配置",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/safety_check.py",
+      "console": "integratedTerminal",
+      "args": [
+        "${input:imagePath}",
+        "--scene",
+        "${input:scene}",
+        "--dry-run"
+      ]
+    }
+  ],
+  "inputs": [
+    {
+      "id": "imagePath",
+      "type": "promptString",
+      "description": "输入待检测图片的绝对路径"
+    },
+    {
+      "id": "scene",
+      "type": "promptString",
+      "description": "输入已知场景，例如：施工现场配电箱违规",
+      "default": "施工现场配电箱违规"
+    }
+  ]
+}
