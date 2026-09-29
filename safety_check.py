@@ -2,9 +2,9 @@
 """
 DeepSeek Flash construction safety quick checker.
 
-The vision models make the safety decisions. Python only orchestrates the
-requests, validates evidence metadata, records model disagreement, removes
-duplicate model findings, and formats the result for an 8-second quick check.
+DeepSeek Flash makes the visual safety decisions in one model call. Python
+preprocesses the image, validates the structured response, resolves verified
+regulation keys, converts bounding boxes, and formats the standard report.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import base64
 from concurrent.futures import ThreadPoolExecutor
 import io
 import json
+import math
 import os
 import re
 import sys
@@ -23,7 +24,7 @@ from typing import Any, NamedTuple
 
 import httpx
 from dotenv import load_dotenv
-from PIL import Image, ImageFilter, ImageStat
+from PIL import Image, ImageFilter, ImageOps, ImageStat
 
 from scene_rules import (
     get_scene_profile,
@@ -74,6 +75,43 @@ DEFAULT_PROMPT = (
     "基坑、消防、材料堆放和通道等可能存在的风险；由你根据图片和施工安全知识判断风险，"
     "说明直接证据和对应规范。无法确认的不要臆测，写为“疑似违规”或“不可判断”。"
 )
+
+
+def build_single_vision_system_prompt(scene: str | None) -> str:
+    scene_key = normalize_scene(scene)
+    profile = get_scene_profile(scene_key)
+    return f"""你是施工现场安全视觉检测模型。根据输入图片独立完成一次全面、快速的安全检查。
+检查场景提示：{profile['label']}。场景只提供检查方向，不限制其他可见安全风险；用户未指定场景时按综合施工现场检查。
+
+检查要求：先识别图中人员、设备、作业区域、危险源和防护设施，再检查个人防护、作业行为、空间关系、临边洞口、高处、临时用电、机械、吊装、脚手架、基坑、消防、材料、通道及隔离警示等风险。只依据图片直接可见证据；不得把阴影、反光、模糊、遮挡或画面裁切推断成违规。未入镜不等于缺失，空间关系须有清楚几何证据。组合设备的部件分别判断。静态图片不能证明资质、票证、检测记录、承载力、功能试验或精确距离。
+
+每个风险输出一个紧贴可见违规证据的范围框。坐标基于整张输入图片，采用0到1000归一化整数，原点在左上角，格式为 [x1,y1,x2,y2]，其中x向右、y向下，x1/y1为左上角，x2/y2为右下角。范围框应包住实际违规对象/证据，不要框整张图或无关区域。若一条风险涉及彼此分离的多个位置，拆成多个风险项分别定位。无法从图中可靠定位时 bbox_2d_1000 必须为 null，禁止猜坐标；有可定位证据时必须给有效坐标。
+
+法规要求：仅当能确认规范名称、编号和条款与风险确实对应时才填写 citation_key。只能从以下已核验条款目录选择；目录没有明确对应条文或无法确认时写 UNKNOWN。不得编造标准编号、条款原文或查询链接。程序会将合法键替换为目录中的完整、可查询法规文本。
+{regulation_catalog_for_prompt(scene_key)}
+
+状态：CLEAR表示违规状态有直接清晰证据，item和evidence中不得出现“疑似、可能、无法确认、无法判断”等不确定措辞；SUSPECTED表示存在可见线索但仍有不确定性；NOT_ASSESSABLE表示图片不能判断，此时item应描述“某状态无法判断”，不要把未确认事实写成确定违规名称。
+只输出一个合法JSON对象，不输出Markdown、代码围栏或解释，最多5条风险。格式：
+{{
+  "scene_type": "{scene_key}",
+  "scene": "场景中文名称",
+  "issues": [
+    {{
+      "status": "CLEAR/SUSPECTED/NOT_ASSESSABLE",
+      "item": "简明违规项",
+      "target": "违规对象",
+      "position": "图中方位",
+      "evidence": "图片中直接可见的现象",
+      "citation_key": "已核验条款键或UNKNOWN",
+      "confidence": 0.0,
+      "target_visibility": "complete/partial/occluded/not_visible",
+      "evidence_level": "direct/partial/occluded/not_visible/ambiguous",
+      "citation_confidence": "high/medium/low/unknown",
+      "bbox_2d_1000": [100, 200, 400, 650]
+    }}
+  ]
+}}
+无风险时 issues 为空数组。"""
 
 REVIEW_SYSTEM_PROMPT = """你是施工安全事实逻辑复核模型。
 
@@ -263,6 +301,7 @@ def remaining_seconds(deadline: float) -> float:
 
 def analyze_image_quality(image_path: Path) -> dict[str, Any]:
     with Image.open(image_path) as image:
+        image = ImageOps.exif_transpose(image)
         image = image.convert("RGB")
         width, height = image.size
         sample = image.copy()
@@ -313,6 +352,7 @@ def prepare_image_data_url(image_path: Path, max_edge: int, quality: int) -> str
         raise FileNotFoundError(f"Image not found: {image_path}")
 
     with Image.open(image_path) as image:
+        image = ImageOps.exif_transpose(image)
         image = image.convert("RGB")
         width, height = image.size
         longest = max(width, height)
@@ -327,6 +367,59 @@ def prepare_image_data_url(image_path: Path, max_edge: int, quality: int) -> str
 
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
     return f"data:image/jpeg;base64,{encoded}"
+
+
+def original_image_size(image_path: Path) -> tuple[int, int]:
+    with Image.open(image_path) as image:
+        image = ImageOps.exif_transpose(image)
+        return image.size
+
+
+def bbox_1000_to_original(
+    bbox: Any,
+    image_width: int,
+    image_height: int,
+) -> dict[str, int] | None:
+    """Convert model [x1,y1,x2,y2] coordinates on a 0..1000 grid to pixels."""
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return None
+    try:
+        x1, y1, x2, y2 = (float(value) for value in bbox)
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(value) for value in (x1, y1, x2, y2)):
+        return None
+    x1, y1, x2, y2 = (max(0.0, min(1000.0, value)) for value in (x1, y1, x2, y2))
+    if x2 <= x1 or y2 <= y1 or image_width <= 0 or image_height <= 0:
+        return None
+    left = max(0, min(image_width - 1, math.floor(x1 * image_width / 1000)))
+    top = max(0, min(image_height - 1, math.floor(y1 * image_height / 1000)))
+    right = max(left + 1, min(image_width, math.ceil(x2 * image_width / 1000)))
+    bottom = max(top + 1, min(image_height, math.ceil(y2 * image_height / 1000)))
+    return {
+        "x": left,
+        "y": top,
+        "width": right - left,
+        "height": bottom - top,
+        "image_width": image_width,
+        "image_height": image_height,
+    }
+
+
+def normalize_bbox_1000(bbox: Any) -> list[int] | None:
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return None
+    try:
+        values = [float(value) for value in bbox]
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(value) for value in values):
+        return None
+    values = [max(0, min(1000, round(value))) for value in values]
+    x1, y1, x2, y2 = values
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return values
 
 
 def build_vision_payload(
@@ -581,7 +674,15 @@ def strict_issue_quality_gate(issue: dict[str, Any]) -> dict[str, Any]:
     evidence_level = normalize_issue_meta(result.get("evidence_level"), "evidence")
 
     status = str(result.get("status", "SUSPECTED")).upper()
-    if status == "CLEAR" and evidence_level != "direct":
+    if status == "CLEAR" and (visibility != "complete" or evidence_level != "direct"):
+        status = "SUSPECTED"
+    uncertainty_text = f"{item} {evidence}"
+    if status == "CLEAR" and re.search(
+        r"无法确认|不能确认|未能确认|难以确认|无法判断|不能判断|看不清|不确定",
+        uncertainty_text,
+    ):
+        status = "NOT_ASSESSABLE"
+    elif status == "CLEAR" and re.search(r"疑似|可能|或许|似乎", uncertainty_text):
         status = "SUSPECTED"
     if visibility in {"occluded", "not_visible"} or evidence_level in {"occluded", "not_visible"}:
         status = "NOT_ASSESSABLE"
@@ -612,7 +713,11 @@ def strict_issue_quality_gate(issue: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def normalize_fact_result(data: dict[str, Any], scene_override: str | None = None) -> dict[str, Any]:
+def normalize_fact_result(
+    data: dict[str, Any],
+    scene_override: str | None = None,
+    original_size: tuple[int, int] | None = None,
+) -> dict[str, Any]:
     detected_scene = normalize_scene(
         scene_override or str(data.get("scene_type") or data.get("scene") or "")
     )
@@ -639,9 +744,8 @@ def normalize_fact_result(data: dict[str, Any], scene_override: str | None = Non
             confidence = float(issue.get("confidence", 0.5))
         except (TypeError, ValueError):
             confidence = 0.5
-        normalized_issues.append(
-            strict_issue_quality_gate(
-                {
+        normalized_issue = strict_issue_quality_gate(
+            {
                 "status": status,
                 "item": str(issue.get("item", "安全风险线索"))[:80],
                 "target": str(issue.get("target", "未指定对象"))[:60],
@@ -656,9 +760,16 @@ def normalize_fact_result(data: dict[str, Any], scene_override: str | None = Non
                 "evidence_level": issue.get("evidence_level", "ambiguous"),
                 "citation_confidence": issue.get("citation_confidence", "unknown"),
                 "needs_review": bool(issue.get("needs_review", status != "CLEAR")),
-                }
-            )
+            }
         )
+        normalized_bbox = normalize_bbox_1000(issue.get("bbox_2d_1000"))
+        normalized_issue["bbox_2d_1000"] = normalized_bbox
+        normalized_issue["bbox_original_px"] = (
+            bbox_1000_to_original(normalized_bbox, *original_size)
+            if original_size is not None
+            else None
+        )
+        normalized_issues.append(normalized_issue)
 
     image_quality = data.get("image_quality") if isinstance(data.get("image_quality"), dict) else {}
     return {
@@ -1193,63 +1304,58 @@ def model_judged_report(
 ) -> str:
     scene_key = normalize_scene(scene or facts_data.get("scene_type"))
     profile = get_scene_profile(scene_key)
-    issues = facts_data.get("issues", [])
-    if not isinstance(issues, list):
-        issues = []
+    source_issues = facts_data.get("issues", [])
+    issues = list(source_issues) if isinstance(source_issues, list) else []
     notes: list[str] = []
 
     quality_note = local_quality.get("note", "图片质量基本可用")
     if local_quality.get("clarity") != "clear" or local_quality.get("glare") or local_quality.get("dark"):
         notes.append(f"图像质量提示：{quality_note}，相关空间状态只作为疑似或不可判断。")
 
-    if not issues:
-        issues.append(
-            {
-                "status": "NOT_ASSESSABLE",
-                "item": "未发现可直接确认的明显违规",
-                "evidence": "模型未在图片中识别出证据充分的安全违规点。",
-                "citation_key": "UNKNOWN",
-            }
-        )
-
     lines = [
+        "报告格式版本：1.0",
+        "检测模型：DeepSeek Flash（单模型单次视觉检测）",
         f"检查场景：{profile['label']}",
         f"主要参考规范：{profile['standards']}",
+        f"原图尺寸：{int(local_quality.get('width', 0))} × {int(local_quality.get('height', 0))} 像素",
         "",
-        "基于图片中清晰可见的施工现场情况，识别出以下安全风险点及对应的安全规范：",
+        "检测结果：以下为模型基于图片可见证据给出的安全风险初筛结果。",
         "",
     ]
+    if not issues:
+        lines.extend(
+            [
+                "未发现可直接确认的明显违规。",
+                "说明：该结论仅表示本次单张图片中未识别到证据充分的违规项，不代表现场整体合规。",
+                "",
+            ]
+        )
     for idx, issue in enumerate(issues[:8], start=1):
-        status = issue_status_zh(str(issue.get("vote_status", issue.get("status", "SUSPECTED"))))
+        status_code = str(issue.get("vote_status", issue.get("status", "SUSPECTED"))).upper()
+        status = issue_status_zh(status_code)
         lines.append(f"{idx}. {status}：{issue.get('item', '安全风险线索')}")
         position = str(issue.get("position") or issue.get("target") or "").strip()
         if position:
             lines.append(f"• 目标位置：{position}")
         lines.append(f"• 现象描述：{issue.get('evidence', '图片可见风险线索，需复核')}")
-        lines.append(f"• 违反的具体安全条例：{issue.get('rule', format_regulation('UNKNOWN'))}")
-        if "vote_confidence" in issue:
+        regulation_label = (
+            "违反的具体安全条例"
+            if status_code == "CLEAR"
+            else "可能涉及的安全条例（尚未确认违反）"
+        )
+        lines.append(f"• {regulation_label}：{issue.get('rule', format_regulation('UNKNOWN'))}")
+        bbox = issue.get("bbox_original_px")
+        if isinstance(bbox, dict):
             lines.append(
-                f"• 模型投票：{issue.get('vote_support', 1)}/{issue.get('vote_total', 1)} 支持，"
-                f"{issue.get('vote_label', '模型投票')}，"
-                f"单模型证据均值 {float(issue.get('model_evidence_confidence', 0.0)):.2f}，"
-                f"共识度 {float(issue.get('consensus_score', 0.0)):.2f}，"
-                f"模型完成率 {float(issue.get('model_availability_rate', 0.0)):.2f}，"
-                f"融合置信度 {float(issue.get('vote_confidence', 0.0)):.2f}"
+                "• 违规范围框（原图像素，左上角原点）："
+                f"x={bbox['x']}, y={bbox['y']}, "
+                f"width={bbox['width']}, height={bbox['height']}"
             )
-        named_votes = issue.get("named_votes")
-        if isinstance(named_votes, list) and named_votes:
-            lines.append("• 实名投票明细：")
-            for vote in named_votes:
-                display = vote.get("display_name", vote.get("source", "未知模型"))
-                vote_label = vote.get("vote", "未返回")
-                status_label = vote.get("status", "")
-                if vote_label == "支持":
-                    score = float(vote.get("score", 0.0))
-                    lines.append(
-                        f"  - {display}：支持（{status_label}，单模型得分 {score:.2f}）"
-                    )
-                else:
-                    lines.append(f"  - {display}：{vote_label}（{status_label}）")
+        else:
+            lines.append("• 违规范围框：无法从当前图片证据中可靠定位（bbox=null）")
+        lines.append(
+            f"• 单模型判断置信度：{float(issue.get('confidence', 0.0)):.2f}"
+        )
         lines.append("")
 
     review_notes = facts_data.get("review_notes")
@@ -1257,30 +1363,7 @@ def model_judged_report(
         notes.extend(str(note) for note in review_notes[:3])
     vision_review = facts_data.get("vision_review")
     if isinstance(vision_review, dict):
-        roster = vision_review.get("model_roster")
-        if isinstance(roster, list) and roster:
-            roster_labels = []
-            for model_info in roster:
-                source = str(model_info.get("source", "unknown"))
-                model = str(model_info.get("model", source))
-                state = str(model_info.get("status", "unknown"))
-                state_label = {
-                    "completed": "已返回",
-                    "failed": "未返回",
-                    "disabled": "未启用",
-                }.get(state, state)
-                roster_labels.append(f"{model_display_name(source, model)}={state_label}")
-            notes.append("模型参与情况：" + "；".join(roster_labels))
-        disagreements = (
-            vision_review.get("fact_disagreements")
-            or vision_review.get("disagreements")
-        )
-        if isinstance(disagreements, dict) and disagreements:
-            labels = profile.get("fields", {})
-            readable = "、".join(labels.get(key, key) for key in list(disagreements)[:3])
-            completed = vision_review.get("completed_models")
-            model_count = len(completed) if isinstance(completed, list) else 2
-            notes.append(f"{model_count} 个视觉模型在 {readable} 上存在差异，已按平权投票和融合置信度输出。")
+        notes.append("本报告由单个视觉大模型生成，没有进行多模型投票或交叉复核。")
     review_flags = facts_data.get("review_flags")
     if isinstance(review_flags, dict) and review_flags:
         notes.append("文本一致性检查发现结构性不一致，请人工复核相关字段。")
@@ -1394,24 +1477,50 @@ def save_result(output_dir: Path, image_path: Path, content: str, elapsed: float
     return result_path
 
 
+def save_json_result(
+    output_dir: Path,
+    image_path: Path,
+    payload: dict[str, Any],
+) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    result_path = output_dir / f"{timestamp}-{image_path.stem}-result.json"
+    saved_payload = dict(payload)
+    saved_payload["saved_path"] = str(result_path)
+    result_path.write_text(
+        json.dumps(saved_payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return result_path
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Use DeepSeek Flash API to check construction safety risks in one image.")
     parser.add_argument("image", help="Path to the construction-site image.")
     parser.add_argument("--scene", default="", help="Known scene, for example: 施工现场配电箱违规 / 高处作业 / 临边防护.")
     parser.add_argument("--prompt", default=DEFAULT_PROMPT, help="Custom user prompt.")
-    parser.add_argument("--output-dir", default="outputs", help="Directory for saved result markdown files.")
+    parser.add_argument("--output-dir", default="outputs", help="Directory for saved result files.")
     parser.add_argument("--no-save", action="store_true", help="Print only, do not save result file.")
     parser.add_argument("--dry-run", action="store_true", help="Validate image preprocessing and config without calling the API.")
-    parser.add_argument("--show-timing", action="store_true", help="Print preprocessing, model, parsing, voting, and report timing.")
+    parser.add_argument("--show-timing", action="store_true", help="Print preprocessing, model, parsing, coordinate conversion, and report timing.")
+    parser.set_defaults(json_output=True)
     parser.add_argument(
         "--json-output",
+        dest="json_output",
         action="store_true",
-        help="Print a machine-readable JSON result instead of the human-readable console output.",
+        help="Print the standard machine-readable JSON result (default).",
+    )
+    parser.add_argument(
+        "--text-output",
+        dest="json_output",
+        action="store_false",
+        help="Print the human-readable Markdown report instead of standard JSON.",
     )
     return parser.parse_args()
 
 
-def main() -> int:
+def legacy_multi_model_main() -> int:
+    """Inactive historical entrypoint retained for compatibility tests only."""
     # Always load the configuration beside this script, independent of the shell cwd.
     load_dotenv(Path(__file__).with_name(".env"))
     args = parse_args()
@@ -1829,6 +1938,191 @@ def main() -> int:
     else:
         print(f"\n耗时：{elapsed:.2f} 秒\n")
         print(result)
+    return 0
+
+
+def main() -> int:
+    load_dotenv(Path(__file__).with_name(".env"))
+    args = parse_args()
+    image_path = Path(args.image).expanduser().resolve()
+    output_dir = Path(args.output_dir).expanduser().resolve()
+    requested_scene = normalize_scene(args.scene)
+    scene_override = args.scene.strip() or None
+    model = os.getenv("DEEPSEEK_MODEL", "deepseek-flash").strip()
+    base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/chat/completions").strip()
+    timeout_seconds = env_float("REQUEST_TIMEOUT_SECONDS", 8.0)
+    max_edge = env_int("MAX_IMAGE_EDGE", 768)
+    jpeg_quality = env_int("JPEG_QUALITY", 70)
+    image_detail = os.getenv("IMAGE_DETAIL", "low").strip()
+    max_tokens = env_int("SINGLE_MODEL_MAX_TOKENS", env_int("MAX_TOKENS", 1100))
+    temperature = env_float("TEMPERATURE", 0.0)
+    reasoning_effort = os.getenv("REASONING_EFFORT", "none").strip().lower()
+    if reasoning_effort not in {"none", "low", "high", "max"}:
+        print("ERROR: REASONING_EFFORT must be none, low, high, or max.", file=sys.stderr)
+        return 2
+
+    started = time.perf_counter()
+    try:
+        preprocess_started = time.perf_counter()
+        image_size = original_image_size(image_path)
+        local_quality = analyze_image_quality(image_path)
+        image_data_url = prepare_image_data_url(image_path, max_edge=max_edge, quality=jpeg_quality)
+        system_prompt = build_single_vision_system_prompt(requested_scene)
+        user_parts = []
+        if scene_override:
+            user_parts.append(f"用户指定场景：{scene_override}")
+        user_parts.extend(
+            [
+                f"原图显示尺寸：宽{image_size[0]}像素，高{image_size[1]}像素。",
+                f"图像质量提示：{local_quality.get('note', '图片质量基本可用')}。",
+                f"检测要求：{args.prompt.strip() or DEFAULT_PROMPT}",
+                "坐标必须按整张原图归一化到0-1000后输出，禁止按压缩输入图的像素坐标输出。",
+            ]
+        )
+        payload = build_vision_payload(
+            image_data_url=image_data_url,
+            system_prompt=system_prompt,
+            user_text="\n".join(user_parts),
+            model=model,
+            image_detail=image_detail,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            reasoning_effort=reasoning_effort,
+        )
+        preprocess_elapsed = time.perf_counter() - preprocess_started
+        if args.dry_run:
+            dry_result = {
+                "status": "dry_run_ok",
+                "format_version": "1.0",
+                "model": model,
+                "vision_calls": 1,
+                "scene": get_scene_profile(requested_scene)["label"],
+                "image": {
+                    "path": str(image_path),
+                    "width": image_size[0],
+                    "height": image_size[1],
+                },
+                "config": {
+                    "max_image_edge": max_edge,
+                    "reasoning_effort": reasoning_effort,
+                    "max_tokens": max_tokens,
+                    "timeout_seconds": timeout_seconds,
+                },
+                "timings": {"preprocess": round(preprocess_elapsed, 4)},
+            }
+            if args.json_output:
+                print(json.dumps(dry_result, ensure_ascii=False, indent=2))
+            else:
+                print("DRY RUN OK")
+                print(f"image={image_path}")
+                print(f"model={model}")
+                print("vision_calls=1")
+                print(f"scene={dry_result['scene']}")
+                print(f"original_image_size={image_size[0]}x{image_size[1]}")
+                print(f"max_image_edge={max_edge}")
+                print(f"reasoning_effort={reasoning_effort}")
+                print(f"max_tokens={max_tokens}")
+                print(f"timeout={timeout_seconds:.1f}s")
+                print(f"preprocess_elapsed={preprocess_elapsed:.3f}s")
+            return 0
+
+        api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+        if not api_key or api_key.startswith("sk-你的"):
+            print("ERROR: Please set DEEPSEEK_API_KEY in .env first.", file=sys.stderr)
+            return 2
+
+        model_timeout = env_float(
+            "DEEPSEEK_VISION_TIMEOUT_SECONDS",
+            max(1.0, timeout_seconds - 0.55),
+        )
+        model_timeout = min(model_timeout, max(1.0, timeout_seconds - preprocess_elapsed - 0.35))
+        call_started = time.perf_counter()
+        raw = call_deepseek(
+            payload,
+            api_key=api_key,
+            base_url=base_url,
+            timeout_seconds=model_timeout,
+        )
+        model_elapsed = time.perf_counter() - call_started
+
+        parse_started = time.perf_counter()
+        detected = normalize_fact_result(
+            extract_json_object(raw),
+            scene_override=scene_override,
+            original_size=image_size,
+        )
+        detected = apply_scene_gate(detected, scene=scene_override, prompt=args.prompt)
+        detected["image_quality"] = local_quality
+        detected["image_width"] = image_size[0]
+        detected["image_height"] = image_size[1]
+        parse_elapsed = time.perf_counter() - parse_started
+
+        report_started = time.perf_counter()
+        elapsed = time.perf_counter() - started
+        report = model_judged_report(
+            detected,
+            local_quality,
+            elapsed=elapsed,
+            scene=scene_override or detected.get("scene_type"),
+            prompt=args.prompt,
+        )
+        report_elapsed = time.perf_counter() - report_started
+        timings = {
+            "preprocess": round(preprocess_elapsed, 4),
+            "deepseek_vision": round(model_elapsed, 4),
+            "parse_normalize": round(parse_elapsed, 4),
+            "report_format": round(report_elapsed, 4),
+            "total": round(time.perf_counter() - started, 4),
+        }
+        if args.show_timing:
+            report += "\n\n时间分配：\n"
+            report += f"- 图片预处理与请求构造：{timings['preprocess']:.3f} 秒\n"
+            report += f"- DeepSeek Flash 单次图片检测：{timings['deepseek_vision']:.3f} 秒\n"
+            report += f"- JSON解析与坐标换算：{timings['parse_normalize']:.3f} 秒\n"
+            report += f"- 报告格式化：{timings['report_format']:.3f} 秒\n"
+            report += f"- 总耗时：{timings['total']:.3f} 秒"
+    except httpx.TimeoutException:
+        print(f"ERROR: DeepSeek Flash request exceeded the time budget ({timeout_seconds:.1f}s total).", file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    elapsed = timings["total"]
+    if elapsed > timeout_seconds:
+        print(f"WARNING: Total elapsed time exceeded {timeout_seconds:.1f} seconds.", file=sys.stderr)
+
+    response = {
+        "status": "success",
+        "format_version": "1.0",
+        "output_format": "structured_json",
+        "model": model,
+        "scene": detected.get("scene"),
+        "scene_type": detected.get("scene_type"),
+        "image": {
+            "width": image_size[0],
+            "height": image_size[1],
+            "coordinate_origin": "top_left",
+            "coordinate_unit": "pixel",
+        },
+        "elapsed_seconds": elapsed,
+        "issue_count": len(detected.get("issues", [])),
+        "issues": detected.get("issues", []),
+        "warnings": [],
+        "timings": timings,
+    }
+
+    if args.json_output:
+        if not args.no_save:
+            saved_path = save_json_result(output_dir, image_path=image_path, payload=response)
+            response["saved_path"] = str(saved_path)
+        print(json.dumps(response, ensure_ascii=False, indent=2))
+    else:
+        if not args.no_save:
+            saved_path = save_result(output_dir, image_path=image_path, content=report, elapsed=elapsed)
+            print(f"结果已保存：{saved_path}")
+        print(f"\n耗时：{elapsed:.2f} 秒\n")
+        print(report)
     return 0
 
 

@@ -25,7 +25,7 @@ CHECK_SCRIPT = BASE_DIR / "safety_check.py"
 load_dotenv(BASE_DIR / ".env")
 
 MAX_UPLOAD_BYTES = int(os.getenv("API_MAX_UPLOAD_BYTES", str(12 * 1024 * 1024)))
-PROCESS_TIMEOUT_SECONDS = float(os.getenv("API_PROCESS_TIMEOUT_SECONDS", "10"))
+PROCESS_TIMEOUT_SECONDS = float(os.getenv("API_PROCESS_TIMEOUT_SECONDS", "8"))
 MAX_CONCURRENT_REQUESTS = max(1, int(os.getenv("API_MAX_CONCURRENT_REQUESTS", "2")))
 ACCESS_TOKEN = os.getenv("API_ACCESS_TOKEN", "").strip()
 REQUEST_SLOTS = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
@@ -33,7 +33,7 @@ REQUEST_SLOTS = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 app = FastAPI(
     title="Construction Safety Image Inspection API",
     version="1.0.0",
-    description="Upload a construction-site image and receive a structured multi-model safety inspection result.",
+    description="Upload a construction-site image and receive a structured single-call DeepSeek Flash safety inspection with original-image bounding boxes.",
 )
 
 

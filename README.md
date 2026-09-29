@@ -1,6 +1,8 @@
-# 多模型复杂工地安全快速检测
+# DeepSeek Flash 工地安全快速检测
 
-这个小项目用于通过 DeepSeek Flash、Qwen、GLM、Kimi 和豆包五个视觉模型对施工现场图片做一次性多场景安全快速检测。五个模型使用同一套安全检测 Prompt，平权并行读取同一张图片，再通过置信度评分和投票融合生成最终风险初筛报告。未配置某个模型的 API Key 时，程序会自动跳过该模型并记录提示。
+当前版本使用 DeepSeek Flash 对施工现场图片进行单次视觉安全检测。输入为一张图片，可选提供场景提示；输出包含风险描述、可匹配的已核验安全条文，以及每条风险在原图上的范围框坐标。报告同时提供固定字段的中文文本和机器可读 JSON。
+
+坐标由模型按整图 0–1000 归一化网格估计，程序换算为原图像素的左上角 `x,y` 与 `width,height`。视觉模型定位是近似结果，无法可靠定位时返回 `null`，不得将估计框当作测量级边界。
 
 当前支持的场景提示配置：
 
@@ -21,10 +23,6 @@
 - Python 3.10 或更高版本
 - VS Code
 - DeepSeek API Key
-- 通义千问 API Key
-- GLM API Key
-- Kimi API Key
-- 火山方舟豆包 API Key 和视觉模型推理接入点 ID
 
 ## 2. 安装环境
 
@@ -50,50 +48,12 @@ cp .env.example .env
 ```env
 DEEPSEEK_API_KEY=sk-你的真实密钥
 DEEPSEEK_MODEL=deepseek-flash
-QWEN_API_KEY=sk-你的通义千问真实密钥
-QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions
-QWEN_REVIEW_MODEL=qwen3.8-flash
-ENABLE_QWEN_VISION_REVIEW=true
-QWEN_VISION_MODEL=qwen3.8-flash
-ENABLE_THIRD_VISION_REVIEW=true
-THIRD_VISION_BASE_URL=https://open.bigmodel.cn/api/paas/v4/chat/completions
-THIRD_VISION_MODEL=glm-5.3-flash
-ENABLE_STRONG_REVIEW=true
-ENABLE_KIMI_VISION=true
-KIMI_API_KEY=sk-你的Kimi真实密钥
-KIMI_BASE_URL=https://api.moonshot.cn/v1/chat/completions
-KIMI_VISION_MODEL=kimi-k2.6
-ENABLE_DOUBAO_VISION=true
-DOUBAO_API_KEY=你的火山方舟真实密钥
-DOUBAO_BASE_URL=https://ark.cn-beijing.volces.com/api/v3/chat/completions
-DOUBAO_VISION_MODEL=ep-你的豆包视觉接入点ID
 REQUEST_TIMEOUT_SECONDS=8
-PRIMARY_TIMEOUT_SECONDS=4.2
-REVIEW_TIMEOUT_SECONDS=3.2
-QWEN_VISION_TIMEOUT_SECONDS=6.8
-KIMI_VISION_TIMEOUT_SECONDS=7.2
-DOUBAO_VISION_TIMEOUT_SECONDS=7.2
-```
-
-`QWEN_API_KEY` 用于 Qwen 平权视觉检测。若暂时不填写，程序会跳过 Qwen，并在报告中说明实际参与投票的模型数量。
-
-GLM、Kimi 和豆包都作为平权视觉模型参与检测。拿到对应 API Key 后，填写：
-
-```env
-ENABLE_THIRD_VISION_REVIEW=true
-THIRD_VISION_API_KEY=sk-你的第三模型密钥
-THIRD_VISION_MODEL=glm-5.3-flash
-```
-
-GLM、Kimi 和豆包与 DeepSeek、Qwen 一样都是平权视觉模型。使用不同厂商/不同架构的模型，有助于减少同源偏差；当前配置最多可由五个模型共同参与投票。
-
-Kimi 和豆包会与 DeepSeek、Qwen、GLM 平权并行进行图片安全检测。Kimi 使用视觉模型名；豆包通常使用火山方舟控制台创建的视觉模型推理接入点 ID，例如 `ep-xxxxxxxx-xxxxx`：
-
-```env
-KIMI_API_KEY=你的KimiAPI密钥
-KIMI_VISION_MODEL=kimi-k2.6
-DOUBAO_API_KEY=你的火山方舟API密钥
-DOUBAO_VISION_MODEL=ep-你的豆包视觉接入点ID
+DEEPSEEK_VISION_TIMEOUT_SECONDS=7.2
+MAX_IMAGE_EDGE=768
+IMAGE_DETAIL=low
+SINGLE_MODEL_MAX_TOKENS=1200
+REASONING_EFFORT=none
 ```
 
 如果你的 DeepSeek Flash API 地址或模型名和默认值不同，请按实际平台文档修改：
@@ -101,14 +61,6 @@ DOUBAO_VISION_MODEL=ep-你的豆包视觉接入点ID
 ```env
 DEEPSEEK_BASE_URL=https://api.deepseek.com/chat/completions
 DEEPSEEK_MODEL=deepseek-flash
-```
-
-Qwen 默认使用阿里云百炼 OpenAI 兼容接口。当前实验中，`qwen3.8-flash` 同时承担图片二次复检；如果更看重视觉复检速度，也可以切换回 `qwen-vl-plus`：
-
-```env
-QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions
-QWEN_REVIEW_MODEL=qwen3.8-flash
-QWEN_VISION_MODEL=qwen3.8-flash
 ```
 
 ## 4. 运行检测
@@ -119,7 +71,7 @@ QWEN_VISION_MODEL=qwen3.8-flash
 python safety_check.py "/图片/绝对路径.jpg" --scene "起重吊装" --dry-run
 ```
 
-普通运行：
+普通运行（默认输出并保存标准 JSON）：
 
 ```bash
 python safety_check.py "/图片/绝对路径.jpg"
@@ -148,17 +100,22 @@ python safety_check.py "/图片/绝对路径.jpg" --scene "脚手架"
 终端会输出：
 
 ```text
-耗时：6.23 秒
+报告格式版本：1.0
+检测模型：DeepSeek Flash（单模型单次视觉检测）
+检查场景：施工现场综合安全
+原图尺寸：2000 × 1000 像素
 
-基于图片中清晰可见的施工现场情况，识别出以下安全违规点及对应的安全规范：
-
-1. 违规点：……
+1. 明确违规：……
+• 目标位置：……
 • 现象描述：……
 • 违反的具体安全条例：《建筑与市政工程施工现场临时用电安全技术标准》JGJ/T 46-2024 第……条：……
-  查询链接：https://gf.cabr-fire.com/article-68828.htm
+• 违规范围框（原图像素，左上角原点）：x=200, y=200, width=600, height=450
+• 单模型判断置信度：0.90
+
+流程耗时：3.38 秒
 ```
 
-同时会把结果保存到 `outputs/` 目录。
+普通运行默认把带缩进的标准 JSON 打印到终端，并保存到 `outputs/` 目录。JSON 不再重复嵌入整段 Markdown，风险、条例和范围框统一放在 `issues` 数组中，其他成员可直接使用 `issues[].bbox_original_px` 绘制范围框。只有需要纯文本报告时才使用 `--text-output`。
 
 ## 6. 八秒内响应的关键设置
 
@@ -166,23 +123,11 @@ python safety_check.py "/图片/绝对路径.jpg" --scene "脚手架"
 
 ```env
 REQUEST_TIMEOUT_SECONDS=8
+DEEPSEEK_VISION_TIMEOUT_SECONDS=7.2
 IMAGE_DETAIL=low
 MAX_IMAGE_EDGE=768
 JPEG_QUALITY=70
-MAX_TOKENS=1100
-REVIEW_MAX_TOKENS=350
-QWEN_MAX_IMAGE_EDGE=448
-QWEN_JPEG_QUALITY=50
-QWEN_VISION_MAX_TOKENS=350
-THIRD_MAX_IMAGE_EDGE=256
-THIRD_JPEG_QUALITY=35
-THIRD_VISION_MAX_TOKENS=700
-KIMI_MAX_IMAGE_EDGE=384
-KIMI_JPEG_QUALITY=45
-KIMI_VISION_MAX_TOKENS=320
-DOUBAO_MAX_IMAGE_EDGE=256
-DOUBAO_JPEG_QUALITY=38
-DOUBAO_VISION_MAX_TOKENS=448
+SINGLE_MODEL_MAX_TOKENS=1200
 TEMPERATURE=0
 REASONING_EFFORT=none
 ```
@@ -190,17 +135,17 @@ REASONING_EFFORT=none
 如果经常超过 8 秒，优先调小：
 
 ```env
-MAX_IMAGE_EDGE=768
-MAX_TOKENS=600
+MAX_IMAGE_EDGE=640
+SINGLE_MODEL_MAX_TOKENS=900
 ```
 
-注意：`high` 和 `max` 会自动提高实际请求的 `max_tokens`，为思考过程和最终报告预留空间，因此这两种模式可能超过 8 秒。
+降低图片尺寸或输出 token 数可能减少识别细节或截断 JSON，应通过测试集验证后再长期使用。`high` 和 `max` 会启用更充分思考，通常更容易超过 8 秒。
 
 深度思考强度可以这样设置：
 
 ```env
 REASONING_EFFORT=none   # 关闭思考，最快
-REASONING_EFFORT=none   # 关闭思考，优先保证快速返回
+REASONING_EFFORT=low    # 最低思考强度，速度较慢
 REASONING_EFFORT=high   # 更充分思考，速度较慢
 REASONING_EFFORT=max    # 最大思考，速度最慢
 ```
@@ -221,19 +166,13 @@ REASONING_EFFORT=none
 
 当前临时用电目录使用现行《建筑与市政工程施工现场临时用电安全技术标准》JGJ/T 46-2024。查询入口为中国建筑科学研究院建筑防火研究所标准页面：https://gf.cabr-fire.com/article-68828.htm。报告中的条款仍应结合项目所在地、工程日期和适用标准版本由安全专业人员确认。
 
-当前版本针对复杂工地安全场景增加了多层误判抑制：
+当前单模型检测链路：
 
-1. 五个视觉模型平权并行检测：DeepSeek Flash、Qwen、GLM、Kimi、豆包（按配置启用情况参与）同时读取同一张图片，分别完成图片识别和安全风险判断；不存在主模型替其他模型裁决的层级关系。
-2. 代码只做编排和质量控制：负责图片压缩、超时控制、JSON 解析、五模型投票融合、证据字段校验和报告格式化，不把有限规则库作为主要裁判。
-3. 风险归并：优先使用模型输出的稳定 `risk_key`，同时检查目标对象、位置和文本证据是否相容。相同法规编号不能单独证明是同一风险，因此同一法规下不同对象或不同位置的风险会分别保留。
-4. 低票风险保留：多数票风险优先展示；只有一个或少数模型发现、但证据仍可描述的风险也会保留，并标记为“少数模型发现，待人工复核”，不会因为票数少而静默删除。
-5. 置信度融合：`model_evidence_confidence` 表示支持模型的证据质量均值，`consensus_score` 表示支持模型占已完成模型的比例，`configured_support_rate` 表示支持模型占已配置模型的比例，`model_availability_rate` 表示已完成模型占已配置模型的比例；`vote_confidence` 综合证据、共识、配置覆盖率，并对未完成模型进行可用率惩罚，单模型自信不能直接变成高融合置信度。
-6. 实名投票明细：每条风险都会逐一列出 DeepSeek、Qwen、GLM、Kimi、豆包的投票状态。`支持` 表示该模型返回了同一根本风险，`未支持` 表示该模型已完成图片检测但没有提出该风险，`未返回` 表示调用失败、超时或 JSON 无法解析。
-7. 事实字段辅助复核：`yes/no/uncertain/not_applicable` 用来判断对象是否存在、状态是否可见，但不限制模型发现其他安全风险。
-8. Qwen 文本复核兜底：当视觉复检失败且事实字段存在逻辑冲突时，只复核 JSON 一致性。
-9. 通用证据门控：每个风险必须同时说明 `target_visibility` 和 `evidence_level`；关键部位未入镜、被遮挡或证据不直接时，代码只做通用证据质量控制，不替模型新增风险。
-10. 文本复核模型只检查 JSON 是否自相矛盾，复核意见单独记录为人工复核提示，不覆盖主模型视觉事实。
-11. 代码不再把“箱门打开”强制改写成“插座口外露”或直接改成“不可判断”；配电箱主箱门、插座盖、插头、接线端子和电缆接口由视觉模型根据实际形态分别识别。
+1. DeepSeek Flash 完成图片识别和施工安全判断，代码不再调用其他视觉或文本模型。
+2. Prompt 要求说明对象、位置、可见证据、风险状态和 0–1000 归一化边界框；未能可靠定位时返回 `null`。
+3. 代码只做通用字段校验、合法法规键校验、坐标裁剪及从归一化坐标到原图像素坐标的换算，不按场景关键词创建或覆盖风险结论。
+4. 违规范围框输出为原图像素坐标：左上角 `x,y`，以及 `width,height`；图像按 EXIF 方向校正后确定坐标系。
+5. 法规引用由 `verified_regulations.py` 白名单补全。当前已核验目录集中在施工现场临时用电；目录没有对应条款时报告会明确写“暂未匹配到已核验的具体条文”，不让模型编造法规。
 
 因此，图片受强光、反光、遮挡、模糊影响时，结果会更倾向于输出“疑似违规”或“不可判断”，减少把不确定内容写成确定违规。
 
@@ -241,16 +180,11 @@ REASONING_EFFORT=none
 
 ```text
 总超时 REQUEST_TIMEOUT_SECONDS=8
-Flash 初筛 PRIMARY_TIMEOUT_SECONDS=4.2
-Qwen 图像复检 QWEN_VISION_TIMEOUT_SECONDS=7.2
-第三模型复检 THIRD_VISION_TIMEOUT_SECONDS=7.2
-Kimi 图片检测 KIMI_VISION_TIMEOUT_SECONDS=7.2
-豆包图片检测 DOUBAO_VISION_TIMEOUT_SECONDS=7.2
-Qwen 文本复核 REVIEW_TIMEOUT_SECONDS=3.2
-剩余时间用于规则汇总和输出
+DeepSeek Flash 单次视觉请求 DEEPSEEK_VISION_TIMEOUT_SECONDS=7.2
+剩余时间用于 JSON 解析、坐标换算和报告输出
 ```
 
-各视觉模型是并行进行的，所以总耗时接近最慢的一路模型，而不是三次相加。如果某一路复检模型没有在时间预算内返回，程序会保留已完成模型的结果，并在报告中提示该模型未完成。
+单模型减少了多路并发等待，但第三方 API、网络和服务端排队仍可能导致总时长超过 8 秒；该时间要求是目标，不是任何网络情况下的绝对保证。
 
 ## 8.1 高精度模型检查协议
 
@@ -330,7 +264,7 @@ code "/Users/gjz/Documents/ChatGPT/复杂环境安全巡检/deepseek_flash_safet
 
 ## 11. 视频处理端 HTTP API
 
-项目原先只有命令行入口，没有供其他程序直接连接的 HTTP API。现在新增 `api_server.py`，视频处理端可逐帧上传图片，服务端继续使用本机 `.env` 中配置的五个视觉模型并行检测。视频端不需要、也不应传递任何模型厂商的 API Key。
+项目提供 `api_server.py` HTTP API，视频处理端可上传图片并获取 DeepSeek Flash 单次检测结果及原图坐标框。视频端不需要、也不应传递模型厂商的 API Key。
 
 安装依赖并启动服务：
 
@@ -379,32 +313,46 @@ HTTP `200`，JSON 字段如下：
 ```json
 {
   "status": "success",
+  "format_version": "1.0",
+  "output_format": "structured_json",
+  "model": "deepseek-flash",
   "scene": "施工现场综合安全",
   "scene_type": "GENERAL_SITE",
-  "elapsed_seconds": 6.23,
+  "image": {
+    "width": 2000,
+    "height": 1000,
+    "coordinate_origin": "top_left",
+    "coordinate_unit": "pixel"
+  },
+  "elapsed_seconds": 5.23,
+  "issue_count": 1,
   "issues": [
     {
       "item": "风险名称",
       "status": "SUSPECTED",
-      "vote_status": "SUSPECTED",
+      "target": "风险对象",
+      "position": "图片中的位置",
       "evidence": "图片中可直接观察到的现象",
-      "rule": "对应的已核验规范，或暂未匹配到已核验的具体条文",
-      "vote_support": 2,
-      "vote_total": 5,
-      "named_votes": [
-        {"display_name": "DeepSeek Flash", "vote": "支持"},
-        {"display_name": "Qwen3.8-Flash", "vote": "未支持"}
-      ]
+      "rule": "已核验规范标准名称、编号、条款原文和查询链接，或未匹配提示",
+      "confidence": 0.82,
+      "citation_key": "UNKNOWN",
+      "bbox_2d_1000": [100, 200, 400, 650],
+      "bbox_original_px": {
+        "x": 200,
+        "y": 200,
+        "width": 600,
+        "height": 450,
+        "image_width": 2000,
+        "image_height": 1000
+      }
     }
   ],
-  "vision_review": {},
   "warnings": [],
-  "timings": {},
-  "report": "便于人阅读的完整检测报告文本"
+  "timings": {}
 }
 ```
 
-`issues` 中每项还会包含模型证据均值、共识度、配置覆盖率、模型完成率、融合置信度、证据等级和法规键等字段；`named_votes` 为实际参与模型的逐模型明细。`未支持` 的含义是该模型完成了检测但没有返回这个风险，不等于它明确判断现场安全；`未返回` 表示模型调用失败或超时。少数模型发现的候选会保留并标记待复核，业务端应同时保留 `report` 和完整 JSON，不要只用投票数过滤风险。
+`bbox_2d_1000` 是模型对整张图估计的归一化 `[x1,y1,x2,y2]`；`bbox_original_px` 是程序换算到 EXIF 方向校正后的原图像素坐标，`x,y` 为左上角，`width,height` 为框宽和框高。无法可靠定位时两者均为 `null`。调用方画框时应使用 `bbox_original_px` 并按 `image.width`、`image.height` 校验边界。
 
 错误响应采用 FastAPI 标准格式，例如 `{"detail":"..."}`；常见 HTTP 状态码为 `400`（空文件）、`401`（访问令牌错误）、`413`（文件过大）、`415`（不支持的图片格式）、`429`（并发繁忙）、`502`（模型流程失败）、`504`（处理超时）。
 
@@ -423,10 +371,10 @@ with open("frame.jpg", "rb") as image_file:
 response.raise_for_status()
 result = response.json()
 for issue in result["issues"]:
-    print(issue["item"], issue["vote_support"], "/", issue["vote_total"])
+    print(issue["item"], issue["bbox_original_px"])
 ```
 
-如视频处理程序运行在另一台机器，需要把服务端 `.env` 中 `API_HOST` 设为 `0.0.0.0`，再设置强随机 `API_ACCESS_TOKEN`，并仅在可信内网开放对应端口；不要把模型厂商密钥放入视频端代码。处理视频时建议先按场景变化或固定时间间隔抽帧，限制并发数，避免每一帧都同时触发五个模型造成费用和排队延迟。接口单次超时由 `API_PROCESS_TIMEOUT_SECONDS` 控制，第三方模型延迟仍可能使请求超时。
+如视频处理程序运行在另一台机器，需要把服务端 `.env` 中 `API_HOST` 设为 `0.0.0.0`，再设置强随机 `API_ACCESS_TOKEN`，并仅在可信网络开放对应端口；不要把模型厂商密钥放入视频端代码。处理视频时建议按场景变化或固定间隔抽帧并限制并发数。接口单次超时由 `API_PROCESS_TIMEOUT_SECONDS` 控制。
 
 ## 12. 不同网络下的远程接入
 
