@@ -1,6 +1,8 @@
 # DeepSeek Flash 工地安全快速检测
 
-当前版本使用 DeepSeek Flash 对施工现场图片进行单次视觉安全检测。输入为一张图片，可选提供场景提示；输出包含风险描述、可匹配的已核验安全条文，以及每条风险在原图上的范围框坐标。报告同时提供固定字段的中文文本和机器可读 JSON。
+当前版本使用 DeepSeek Flash 对施工现场图片进行单次视觉安全检测。模型负责识图、违规判断并提出法规候选；Python 随后用本地已核验现行法规目录校验候选，输出模型候选、最终核验条款、匹配方法以及每条风险在原图上的范围框坐标。法规目录不参与图片识别，也不取代大模型的安全判断。
+
+`make_group_meeting_ppt.py` 仅是旧五模型方案的历史 PPT 生成材料，不被检测脚本或 HTTP API 导入执行，也不代表当前系统架构。
 
 坐标由模型按整图 0–1000 归一化网格估计，程序换算为原图像素的左上角 `x,y` 与 `width,height`。视觉模型定位是近似结果，无法可靠定位时返回 `null`，不得将估计框当作测量级边界。
 
@@ -49,10 +51,10 @@ cp .env.example .env
 DEEPSEEK_API_KEY=sk-你的真实密钥
 DEEPSEEK_MODEL=deepseek-flash
 REQUEST_TIMEOUT_SECONDS=8
-DEEPSEEK_VISION_TIMEOUT_SECONDS=7.2
+DEEPSEEK_VISION_TIMEOUT_SECONDS=7.4
 MAX_IMAGE_EDGE=768
 IMAGE_DETAIL=low
-SINGLE_MODEL_MAX_TOKENS=1200
+SINGLE_MODEL_MAX_TOKENS=2200
 REASONING_EFFORT=none
 ```
 
@@ -100,7 +102,7 @@ python safety_check.py "/图片/绝对路径.jpg" --scene "脚手架"
 终端会输出：
 
 ```text
-报告格式版本：1.0
+报告格式版本：1.3
 检测模型：DeepSeek Flash（单模型单次视觉检测）
 检查场景：施工现场综合安全
 原图尺寸：2000 × 1000 像素
@@ -115,7 +117,7 @@ python safety_check.py "/图片/绝对路径.jpg" --scene "脚手架"
 流程耗时：3.38 秒
 ```
 
-普通运行默认把带缩进的标准 JSON 打印到终端，并保存到 `outputs/` 目录。JSON 不再重复嵌入整段 Markdown，风险、条例和范围框统一放在 `issues` 数组中，其他成员可直接使用 `issues[].bbox_original_px` 绘制范围框。只有需要纯文本报告时才使用 `--text-output`。
+普通运行默认把带缩进的标准 JSON 打印到终端，并保存到 `outputs/` 目录。JSON 不再重复嵌入整段 Markdown，风险、条例和范围框统一放在 `issues` 数组中，其他成员可直接使用 `issues[].bbox_original_px` 绘制范围框。请求使用接口原生 `response_format=json_object` 约束；超时、配置错误和处理异常也输出统一的 JSON 错误对象。只有需要纯文本报告时才使用 `--text-output`。
 
 ## 6. 八秒内响应的关键设置
 
@@ -123,20 +125,19 @@ python safety_check.py "/图片/绝对路径.jpg" --scene "脚手架"
 
 ```env
 REQUEST_TIMEOUT_SECONDS=8
-DEEPSEEK_VISION_TIMEOUT_SECONDS=7.2
+DEEPSEEK_VISION_TIMEOUT_SECONDS=7.4
 IMAGE_DETAIL=low
 MAX_IMAGE_EDGE=768
 JPEG_QUALITY=70
-SINGLE_MODEL_MAX_TOKENS=1200
+SINGLE_MODEL_MAX_TOKENS=2200
 TEMPERATURE=0
 REASONING_EFFORT=none
 ```
 
-如果经常超过 8 秒，优先调小：
+如果经常超过 8 秒，优先调小图片尺寸；人物清单版本不建议把输出上限降到 2000 以下，否则多人图片可能截断 JSON：
 
 ```env
 MAX_IMAGE_EDGE=640
-SINGLE_MODEL_MAX_TOKENS=900
 ```
 
 降低图片尺寸或输出 token 数可能减少识别细节或截断 JSON，应通过测试集验证后再长期使用。`high` 和 `max` 会启用更充分思考，通常更容易超过 8 秒。
@@ -160,27 +161,32 @@ REASONING_EFFORT=none
 
 ## 7. 误判抑制机制
 
-### 7.1 真实、可查询的法规条款
+### 7.1 模型候选与本地法规核验
 
-视觉模型负责识别图片中的对象、状态、风险和证据，但不直接生成最终法规文本。模型只能返回法规目录中的 `citation_key`，程序再从 `verified_regulations.py` 读取标准名称、条款号、条文原文和查询链接。模型返回未知键或无法对应时，报告会明确写“暂未匹配到已核验的具体条文”，不会把模型自由生成的标准编号当作真实条例。
+DeepSeek Flash 在识别风险后，依据施工安全规范知识提出最可能的中国现行标准候选，并返回 `risk_category`、`risk_key`、规范全称、标准编号、条款号、条文要点和匹配状态。法规范围不局限于临时用电，可以覆盖高处、起重吊装、脚手架、基坑、机械、消防和个人防护等场景。
 
-当前临时用电目录使用现行《建筑与市政工程施工现场临时用电安全技术标准》JGJ/T 46-2024。查询入口为中国建筑科学研究院建筑防火研究所标准页面：https://gf.cabr-fire.com/article-68828.htm。报告中的条款仍应结合项目所在地、工程日期和适用标准版本由安全专业人员确认。
+`verified_regulations.py` 只做法规真实性和版本核验，匹配顺序为：标准编号+条款号精确匹配、稳定风险键匹配、风险别名匹配、同场景多关键词保守匹配。匹配成功时输出目录中的规范名称、现行编号、条文和查询来源；模型候选仍保留在 `model_regulation_candidate` 中以便审计。匹配失败时风险项不会被删除，但 `verified_regulation` 为 `null`，并明确要求人工核验。当前版本不是实时联网法规搜索，目录之外的条款不会被冒充为已核验结果。
+
+当前目录共 41 条已核验条款，覆盖 `JGJ/T 46-2024` 的临时用电高频可视风险，以及强制性通用规范 `GB 55034-2022` 中的人员防护、警示标识、外电线路、高处平台、临边洞口、坠物、吊装隔离、吊索具、斜拉斜吊、基坑排水、物料堆放、机械、施工升降机、施工车辆、受限空间、气瓶与易燃易爆品、水上作业和腐蚀品防护等内容。目录允许逐步扩充；“场景受支持”不等于“该场景全部条款已经入库”。
 
 当前单模型检测链路：
 
 1. DeepSeek Flash 完成图片识别和施工安全判断，代码不再调用其他视觉或文本模型。
-2. Prompt 要求说明对象、位置、可见证据、风险状态和 0–1000 归一化边界框；未能可靠定位时返回 `null`。
-3. 代码只做通用字段校验、合法法规键校验、坐标裁剪及从归一化坐标到原图像素坐标的换算，不按场景关键词创建或覆盖风险结论。
-4. 违规范围框输出为原图像素坐标：左上角 `x,y`，以及 `width,height`；图像按 EXIF 方向校正后确定坐标系。
-5. 法规引用由 `verified_regulations.py` 白名单补全。当前已核验目录集中在施工现场临时用电；目录没有对应条款时报告会明确写“暂未匹配到已核验的具体条文”，不让模型编造法规。
+2. Prompt 先建立 `objects` 对象/部件清单和 `persons` 人物清单，再判断对象身份、部件归属、装备状态与空间关系。
+3. 开闭、缺失、积水、杂物和空间占用类结论必须返回 `claim_type` 与 `claim_validation`；代码对身份、边界、正向证据、反向解释和空间锚点进行一致性门控。
+4. DeepSeek Flash 为每条风险给出稳定风险键和跨场景法规候选；代码使用本地目录进行精确或保守语义核验。
+5. 违规范围框输出为原图像素坐标：左上角 `x,y`，以及 `width,height`；图像按 EXIF 方向校正后确定坐标系。
+6. 同时输出模型候选、最终核验条款和匹配依据；无可靠匹配时保留风险并要求人工查询。
 
 因此，图片受强光、反光、遮挡、模糊影响时，结果会更倾向于输出“疑似违规”或“不可判断”，减少把不确定内容写成确定违规。
+
+对资质、票证、检测/维护记录、承载力、设计工况、基坑支护必要性等不能由单张图片独立证明的结论，代码只做通用证据降级，不替代模型生成新的违规项。手套、反光背心等任务型防护用品还必须具有对应作业危害线索，不能仅因人员出现在工地或高处就判定缺失。
 
 8 秒控制方式：
 
 ```text
 总超时 REQUEST_TIMEOUT_SECONDS=8
-DeepSeek Flash 单次视觉请求 DEEPSEEK_VISION_TIMEOUT_SECONDS=7.2
+DeepSeek Flash 单次视觉请求 DEEPSEEK_VISION_TIMEOUT_SECONDS=7.4
 剩余时间用于 JSON 解析、坐标换算和报告输出
 ```
 
@@ -192,8 +198,11 @@ DeepSeek Flash 单次视觉请求 DEEPSEEK_VISION_TIMEOUT_SECONDS=7.2
 
 ```text
 对象清单
-→ 人员及关键部位完整性
-→ 空间关系和作业位置
+→ 主体设备识别、部件归属与场景证据
+→ 为每名人员分配 P1/P2 编号
+→ 头部、双手、躯干、腰部、双脚可见性
+→ 装备佩戴位置、支撑面和离地状态
+→ 人员与吊物、临边、设备的空间锚点关系
 → 多类别安全风险扫描
 → 规范匹配
 → 证据自检
@@ -204,13 +213,18 @@ DeepSeek Flash 单次视觉请求 DEEPSEEK_VISION_TIMEOUT_SECONDS=7.2
 ```json
 {
   "target": "风险对象或人员编号",
+  "visual_cues": ["相互独立的直接视觉线索1", "相互独立的直接视觉线索2"],
   "target_visibility": "complete/partial/occluded/not_visible",
   "evidence_level": "direct/partial/occluded/not_visible/ambiguous",
   "citation_confidence": "high/medium/low/unknown"
 }
 ```
 
-例如，人员头部没有完整进入画面时，模型不能写“未戴安全帽”，而应写“头部未完整入镜，无法判断安全帽状态”。代码只依据模型提供的可见性和证据等级进行降级，因此这套机制可以同时适用于安全帽、反光衣、安全带、防护栏、接地、防脱装置等不同风险，不需要为每个物体单独编写违规判断规则。
+对象状态类风险还必须返回 `object_ids`、`claim_type` 和 `claim_validation`。例如主箱门打开必须同时具备主门门板角度位移和箱体开口/内部空间证据；积水必须具备连续水面及至少两项水体视觉特征；缺少护栏必须先完整检查上横杆、中横杆、立杆等构件；设备固定说明页不能判为杂物；空间占用必须证明两个边界实际重叠或阻断，而不是仅仅相邻。
+
+例如，人员头部没有完整进入画面时，模型不能写“未戴安全帽”；左手套和右手套分别记录在 `hand_ppe_states` 中，只要对应手部被钢筋、工具或身体遮挡，“未戴手套”就会被程序降为“不可判断”。人物风险通过 `person_ids` 引用人物清单，代码会核对装备所对应的身体部位是否完整可见。空间风险还要返回身体锚点、参照物锚点、吊物状态和人员所在区域；依赖双脚位置的明确结论必须保证双脚完整可见，抬腿跨越低矮材料不会被保留为明确高处攀爬，靠近静置钢筋或钢丝绳也不会被保留为明确位于吊物下方。
+
+钢筋装卸截图实测中，模型调用和全部本地处理总耗时分别为 `5.41 秒`、`7.33 秒`（网络响应存在波动），均低于 8 秒目标。两次均将左右手套标为 `uncertain`，未输出明确的“未戴手套”；收紧身体锚点门控后，脚部仅部分可见的“站在钢筋堆上”由明确违规降为疑似。该结果说明证据门控可以降低误报，但单张图片和两次调用不能证明所有工地场景都绝对准确，仍应使用标注测试集持续评估。
 
 ## 8. 对象状态与场景提示
 
@@ -313,11 +327,14 @@ HTTP `200`，JSON 字段如下：
 ```json
 {
   "status": "success",
-  "format_version": "1.0",
+  "format_version": "1.3",
   "output_format": "structured_json",
   "model": "deepseek-flash",
   "scene": "施工现场综合安全",
   "scene_type": "GENERAL_SITE",
+  "scene_hint": null,
+  "scene_confidence": 0.91,
+  "scene_evidence": ["主体设备结构", "设备用途标识"],
   "image": {
     "width": 2000,
     "height": 1000,
@@ -326,16 +343,54 @@ HTTP `200`，JSON 字段如下：
   },
   "elapsed_seconds": 5.23,
   "issue_count": 1,
+  "objects": [],
+  "persons": [
+    {
+      "person_id": "P1",
+      "body_visibility": {"head": "complete", "left_hand": "partial", "right_hand": "occluded"},
+      "hand_ppe_states": {"left_glove": "uncertain", "right_glove": "uncertain"},
+      "ppe_states": {"helmet": "worn", "gloves": "uncertain"},
+      "support_surface": "地面",
+      "elevation_state": "GROUND_LEVEL"
+    }
+  ],
   "issues": [
     {
-      "item": "风险名称",
+      "item": "吊物下方人员停留",
       "status": "SUSPECTED",
-      "target": "风险对象",
+      "risk_category": "LIFTING_OPERATIONS",
+      "risk_key": "PERSON_UNDER_SUSPENDED_LOAD",
+      "target": "吊物下方人员",
       "position": "图片中的位置",
       "evidence": "图片中可直接观察到的现象",
-      "rule": "已核验规范标准名称、编号、条款原文和查询链接，或未匹配提示",
+      "model_regulation_candidate": {
+        "standard_name": "模型建议的规范",
+        "standard_code": "模型建议编号",
+        "article": "模型建议条款",
+        "source": "model_internal_knowledge",
+        "verification_required": true
+      },
+      "verified_regulation": {
+        "regulation_id": "LIFTING_EXCLUSION_ZONE",
+        "standard_name": "建筑与市政施工现场安全卫生与职业健康通用规范",
+        "standard_code": "GB 55034-2022",
+        "article": "第3.4.1条",
+        "clause_text": "吊装作业前应设置安全保护区域……",
+        "source": "local_verified_catalog",
+        "verification_required": false
+      },
+      "regulation_match": {
+        "method": "risk_key",
+        "confidence": 0.95,
+        "verified": true
+      },
+      "regulation": {
+        "regulation_id": "LIFTING_EXCLUSION_ZONE",
+        "standard_code": "GB 55034-2022",
+        "article": "第3.4.1条"
+      },
+      "rule": "本地已核验的规范名称、编号、条款、条文和来源",
       "confidence": 0.82,
-      "citation_key": "UNKNOWN",
       "bbox_2d_1000": [100, 200, 400, 650],
       "bbox_original_px": {
         "x": 200,

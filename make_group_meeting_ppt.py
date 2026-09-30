@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Generate a group-meeting PPTX from the Fudan template."""
+"""Historical PPT generator for the retired five-model prototype.
+
+This file is presentation-source archive only. It is not imported or executed
+by ``safety_check.py`` or ``api_server.py`` and does not describe the current
+single-model detection architecture.
+"""
 
 from __future__ import annotations
 
