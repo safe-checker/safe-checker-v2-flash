@@ -108,6 +108,8 @@ class SingleModelCoordinateTests(unittest.TestCase):
         self.assertIn("靠近钢丝绳、车辆或静置材料不等于处于吊物下方", prompt)
         self.assertIn("至少2条相互独立的直接视觉线索", prompt)
         self.assertIn("法规匹配范围不得局限于临时用电", prompt)
+        self.assertIn("禁止编造法规", prompt)
+        self.assertIn("只有目录核验成功的条款才能作为正式引用", prompt)
         self.assertIn("箱门关闭但未上锁", prompt)
         self.assertIn("单一深色区域、土壤色差、阴影", prompt)
         self.assertIn("已有横杆不得", prompt)
@@ -403,6 +405,48 @@ class SingleModelCoordinateTests(unittest.TestCase):
         )
         self.assertIsNone(verified)
         self.assertEqual(match["method"], "none")
+
+    def test_keyword_match_is_not_allowed_to_remain_clear(self) -> None:
+        result = normalize_fact_result(
+            {
+                "scene_type": "TEMPORARY_ELECTRICITY",
+                "issues": [{
+                    "status": "CLEAR",
+                    "risk_category": "TEMPORARY_ELECTRICITY",
+                    "risk_key": "UNKNOWN_CABLE_RISK",
+                    "item": "现场情况",
+                    "target": "对象",
+                    "evidence": "配电箱 操作空间 通道 堆放",
+                    "visual_cues": ["配电箱附近有物品", "操作空间和通道出现堆放"],
+                    "confidence": 0.9,
+                    "target_visibility": "complete",
+                    "evidence_level": "direct",
+                    "regulation": {},
+                    "bbox_2d_1000": [100, 100, 300, 500],
+                }],
+            },
+            original_size=(1000, 1000),
+        )
+        issue = result["issues"][0]
+        self.assertEqual(issue["regulation_match"]["method"], "keyword")
+        self.assertTrue(issue["has_verified_regulation"])
+        self.assertEqual(issue["status"], "SUSPECTED")
+        self.assertIn("关键词命中", issue["review_reason"])
+
+    def test_verified_regulation_exposes_audit_metadata(self) -> None:
+        regulation, match = verify_regulation(
+            candidate={},
+            risk_key="CABLE_ON_GROUND",
+            item_text="电缆沿地面明设",
+            target="施工现场电缆",
+            evidence="电缆与地面连续接触",
+            scene_type="TEMPORARY_ELECTRICITY",
+        )
+        self.assertTrue(match["verified"])
+        self.assertEqual(regulation["version_status"], "current")
+        self.assertTrue(regulation["citation_ready"])
+        self.assertTrue(regulation["catalog_verified_as_of"])
+        self.assertIn("clause_text", regulation)
 
     def test_clear_claim_without_two_visual_cues_is_downgraded(self) -> None:
         result = normalize_fact_result(
@@ -910,6 +954,7 @@ class SingleModelCoordinateTests(unittest.TestCase):
             elapsed=1.2,
         )
         self.assertIn("报告格式版本：1.3", report)
+        self.assertIn("本地目录匹配分", report)
         self.assertIn("x=200, y=200, width=800, height=500", report)
 
     def test_no_risk_report_does_not_create_a_fake_issue(self) -> None:

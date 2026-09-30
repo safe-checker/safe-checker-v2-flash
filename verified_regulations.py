@@ -19,6 +19,7 @@ GB_PDF = (
 )
 JGJ_TITLE = "建筑与市政工程施工现场临时用电安全技术标准"
 JGJ_CODE = "JGJ/T 46-2024"
+CATALOG_VERIFIED_AS_OF = "2026-09-30"
 
 
 def _record(
@@ -49,6 +50,10 @@ def _record(
         "source_url": source_url,
         "official_source_url": official_source_url,
         "keywords": keywords.split(),
+        "catalog_verification": "条款文本、编号和条号已与本地保存的来源记录比对；本项目不执行实时废止状态查询，正式引用前应复核官方现行版本及适用条件。",
+        "catalog_verified_as_of": CATALOG_VERIFIED_AS_OF,
+        "source_authority": "official_primary_document" if official_source_url else "secondary_reference",
+        "citation_ready": True,
     }
 
 
@@ -384,7 +389,8 @@ def _public(record: dict[str, Any]) -> dict[str, Any]:
     keys = (
         "regulation_id", "standard_name", "standard_code", "article",
         "clause_text", "effective_date", "version_status", "source_url",
-        "official_source_url",
+        "official_source_url", "catalog_verification", "catalog_verified_as_of",
+        "source_authority", "citation_ready",
     )
     return {key: record[key] for key in keys}
 
@@ -392,6 +398,19 @@ def _public(record: dict[str, Any]) -> dict[str, Any]:
 def _scene_ok(record: dict[str, Any], scene_type: str | None) -> bool:
     scene = str(scene_type or "AUTO").strip().upper()
     return scene in {"", "AUTO"} or scene in record["scene_types"]
+
+
+def _record_is_publishable(record: dict[str, Any]) -> bool:
+    """Only complete, current catalog records may support a formal citation."""
+    required = (
+        "standard_name", "standard_code", "article", "clause_text",
+        "source_url", "effective_date", "catalog_verification",
+    )
+    return (
+        bool(record.get("citation_ready"))
+        and record.get("version_status") == "current"
+        and all(str(record.get(key) or "").strip() for key in required)
+    )
 
 
 def verify_regulation(
@@ -411,6 +430,8 @@ def verify_regulation(
     article = _norm_article(candidate.get("article"))
     if code and article:
         for record in VERIFIED_REGULATIONS.values():
+            if not _record_is_publishable(record):
+                continue
             record_keys = {_norm_key(value) for value in record["risk_keys"]}
             semantic_hits = sum(keyword in combined for keyword in record["keywords"] if keyword)
             semantically_compatible = (
@@ -428,17 +449,23 @@ def verify_regulation(
 
     if normalized_key:
         for record in VERIFIED_REGULATIONS.values():
+            if not _record_is_publishable(record):
+                continue
             if not _scene_ok(record, scene_type):
                 continue
             if normalized_key in {_norm_key(value) for value in record["risk_keys"]}:
                 return _public(record), _match("risk_key", 0.95, record, "风险键与本地现行条款映射一致。")
 
     for record in VERIFIED_REGULATIONS.values():
+        if not _record_is_publishable(record):
+            continue
         if _scene_ok(record, scene_type) and any(alias in combined for alias in record["risk_aliases"] if alias):
             return _public(record), _match("risk_alias", 0.88, record, "风险描述与本地风险别名直接对应。")
 
     best: tuple[int, dict[str, Any]] | None = None
     for record in VERIFIED_REGULATIONS.values():
+        if not _record_is_publishable(record):
+            continue
         if not _scene_ok(record, scene_type):
             continue
         hits = sum(keyword in combined for keyword in record["keywords"] if keyword)
@@ -454,7 +481,7 @@ def verify_regulation(
         "confidence": 0.0,
         "verified": False,
         "catalog_regulation_id": None,
-        "note": "本地目录未找到可靠对应条款；保留风险结论，法规需人工核验。",
+        "note": "本地目录未找到真实且适用的已核验条款；该风险不得作为明确违规条例输出。",
     }
 
 
@@ -464,6 +491,7 @@ def _match(method: str, confidence: float, record: dict[str, Any], note: str) ->
         "confidence": round(confidence, 2),
         "verified": True,
         "catalog_regulation_id": record["regulation_id"],
+        "verification_level": method,
         "note": note,
     }
 
@@ -471,8 +499,9 @@ def _match(method: str, confidence: float, record: dict[str, Any], note: str) ->
 def format_verified_regulation(regulation: dict[str, Any] | None) -> str:
     if not regulation:
         return "暂未匹配到本地已核验的现行条款；请人工查阅适用标准。"
+    source_url = regulation.get("official_source_url") or regulation.get("source_url")
     return (
         f"《{regulation['standard_name']}》{regulation['standard_code']} "
         f"{regulation['article']}：{regulation['clause_text']}"
-        f"（来源：{regulation['source_url']}）"
+        f"（来源：{source_url}；目录核验日期：{regulation.get('catalog_verified_as_of', '未知')}）"
     )

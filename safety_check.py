@@ -65,7 +65,7 @@ def build_single_vision_system_prompt(scene: str | None) -> str:
 
 每个风险输出一个紧贴可见违规证据的范围框。坐标基于整张输入图片，采用0到1000归一化整数，原点在左上角，格式为 [x1,y1,x2,y2]，其中x向右、y向下，x1/y1为左上角，x2/y2为右下角。范围框应包住实际违规对象/证据，不要框整张图或无关区域。若一条风险涉及彼此分离的多个位置，拆成多个风险项分别定位。无法从图中可靠定位时 bbox_2d_1000 必须为 null，禁止猜坐标；有可定位证据时必须给有效坐标。
 
-法规要求：当前日期为{current_date}。对每个风险，先依据施工安全规范知识给出最可能的中国现行标准候选，优先使用当前仍有效的最新版本，不要在已知存在新版时引用被替代的旧版。输出规范全称、标准编号、具体条款号和条文要点；不能确认时将 match_status 写 NEEDS_VERIFICATION。法规匹配范围不得局限于临时用电，应覆盖图片实际涉及的高处、吊装、脚手架、基坑、机械、消防和个人防护等场景。程序随后只负责将候选与本地已核验现行条款目录比对；模型仍负责识图和安全判断。
+法规要求：当前日期为{current_date}。对每个风险，先依据施工安全规范知识给出最可能的中国现行标准候选，优先使用当前仍有效的最新版本，不要在已知存在新版时引用被替代的旧版。输出规范全称、标准编号、具体条款号和条文要点；不能确认标准真实性、条号或适用条件时将 match_status 写 NEEDS_VERIFICATION，禁止编造法规。法规匹配范围不得局限于临时用电，应覆盖图片实际涉及的高处、吊装、脚手架、基坑、机械、消防和个人防护等场景。程序随后只负责将候选与本地已核验现行条款目录比对；只有目录核验成功的条款才能作为正式引用，模型候选不能单独支撑明确违规；模型仍负责识图和安全判断。
 
 risk_category 使用下列最接近的场景键：GENERAL_SITE、TEMPORARY_ELECTRICITY、WORK_AT_HEIGHT、FOUNDATION_PIT、LIFTING_OPERATIONS、TOWER_CRANE、CONSTRUCTION_HOIST、SCAFFOLD_COUPLER_TYPE、SCAFFOLD_DISC_BUCKLE、SCAFFOLD_CANTILEVER、SCAFFOLD_ATTACHED_LIFTING。risk_key 使用稳定、简短、大写英文下划线编码，表达根本风险，不包含位置和后果，例如 PERSON_UNDER_SUSPENDED_LOAD、CABLE_ON_GROUND；没有合适固定名称时自行给出稳定编码。
 
@@ -1014,6 +1014,12 @@ def strict_issue_quality_gate(
         if result["model_regulation_candidate_text"]
         else "UNMATCHED"
     )
+    result["has_verified_regulation"] = verified is not None
+    result["regulation_verification_level"] = (
+        str(regulation_match.get("method"))
+        if isinstance(regulation_match, dict) and regulation_match.get("verified")
+        else "none"
+    )
     # Compatibility field: consumers that previously read `regulation` now
     # receive only a locally verified canonical clause, never a model guess.
     result["regulation"] = verified
@@ -1030,6 +1036,9 @@ def strict_issue_quality_gate(
         people_by_id=people_by_id,
         objects_by_id=objects_by_id,
     )
+    if status == "CLEAR" and regulation_match.get("method") == "keyword":
+        status = "SUSPECTED"
+        result["review_reason"] = "仅通过多关键词命中法规，尚不足以作为明确违规依据，需人工确认条款适用性。"
     if status == "CLEAR" and verified is None:
         status = "SUSPECTED"
         result["review_reason"] = "风险有视觉线索，但尚无本地已核验的适用条款，不输出为明确违规。"
@@ -1219,8 +1228,13 @@ def model_judged_report(
             lines.append(
                 "• 法规核验："
                 f"{regulation_match.get('method', 'none')}，"
-                f"核验置信度={float(regulation_match.get('confidence', 0.0)):.2f}；"
+                f"本地目录匹配分={float(regulation_match.get('confidence', 0.0)):.2f}（不是法规真实性概率）；"
                 f"{regulation_match.get('note', '')}"
+            )
+        if isinstance(issue.get("verified_regulation"), dict):
+            lines.append(
+                "• 法规来源范围：本地法规目录匹配，非实时联网核验；"
+                "请结合条文适用条件和官方现行版本复核。"
             )
         bbox = issue.get("bbox_original_px")
         if isinstance(bbox, dict):
