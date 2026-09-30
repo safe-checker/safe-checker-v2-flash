@@ -46,6 +46,38 @@ class SingleModelCoordinateTests(unittest.TestCase):
         )
         self.assertEqual(status, "SUSPECTED")
 
+    def test_reflective_vest_claim_cannot_self_prove_low_visibility(self) -> None:
+        status = apply_static_image_scope_gate(
+            {
+                "assessment_type": "PPE",
+                "ppe_item": "reflective_vest",
+                "risk_key": "REFLECTIVE_VEST_NOT_STANDARD",
+                "item": "反光背心穿戴不规范",
+                "target": "作业人员",
+                "evidence": "施工现场可见度较低，背心没有明显反光",
+                "person_ids": ["P1"],
+                "object_ids": ["O1"],
+            },
+            "CLEAR",
+            people_by_id={"P1": {"action": "搬运钢筋"}},
+            objects_by_id={"O1": {"object_type": "静止货车", "observed_state": "停放"}},
+        )
+        self.assertEqual(status, "SUSPECTED")
+
+    def test_reflective_strip_performance_is_not_assessable_from_daylight_photo(self) -> None:
+        status = apply_static_image_scope_gate(
+            {
+                "assessment_type": "PPE",
+                "ppe_item": "reflective_vest",
+                "risk_key": "REFLECTIVE_STRIP_MISSING",
+                "item": "背心未见反光条",
+                "target": "作业人员",
+                "evidence": "蓝色背心未出现强反光",
+            },
+            "CLEAR",
+        )
+        self.assertEqual(status, "NOT_ASSESSABLE")
+
     def test_vision_payload_enforces_json_object_response(self) -> None:
         payload = build_vision_payload(
             image_data_url="data:image/jpeg;base64,AA==",
@@ -80,7 +112,9 @@ class SingleModelCoordinateTests(unittest.TestCase):
         self.assertIn("单一深色区域、土壤色差、阴影", prompt)
         self.assertIn("已有横杆不得", prompt)
         self.assertIn("说明页属于设备文件", prompt)
-        self.assertIn("仅因人员在工地或高处不得判", prompt)
+        self.assertIn("仅因人员在工地、高处或车辆附近不得判定", prompt)
+        self.assertIn("未出现强反光不能证明", prompt)
+        self.assertIn("禁止使用“未佩戴或佩戴不规范”", prompt)
         self.assertIn("最多8个", prompt)
         self.assertIn("最多输出3条", prompt)
         self.assertNotIn("citation_key", prompt)
@@ -699,9 +733,43 @@ class SingleModelCoordinateTests(unittest.TestCase):
         )
         issue = result["issues"][0]
         self.assertEqual(issue["item"], "新的现场风险")
+        self.assertEqual(issue["status"], "SUSPECTED")
         self.assertIsNone(issue["regulation"])
         self.assertIn("人工查阅", issue["rule"])
         self.assertTrue(issue["needs_review"])
+
+    def test_unmatched_complete_model_candidate_is_retained_but_not_verified(self) -> None:
+        result = normalize_fact_result(
+            {
+                "scene_type": "GENERAL_SITE",
+                "issues": [{
+                    "status": "CLEAR",
+                    "risk_category": "GENERAL_SITE",
+                    "risk_key": "UNKNOWN_VISUAL_RISK",
+                    "item": "未知视觉风险",
+                    "target": "设备",
+                    "evidence": "设备出现清晰异常",
+                    "visual_cues": ["异常线索一", "异常线索二"],
+                    "confidence": 0.9,
+                    "target_visibility": "complete",
+                    "evidence_level": "direct",
+                    "regulation": {
+                        "standard_name": "候选标准",
+                        "standard_code": "GB 00000-2026",
+                        "article": "第1.2.3条",
+                        "clause_summary": "候选条文内容",
+                        "match_status": "NEEDS_VERIFICATION",
+                    },
+                    "bbox_2d_1000": [100, 100, 300, 500],
+                }],
+            },
+            original_size=(1000, 1000),
+        )
+        issue = result["issues"][0]
+        self.assertEqual(issue["status"], "SUSPECTED")
+        self.assertEqual(issue["regulation_status"], "MODEL_CANDIDATE_UNVERIFIED")
+        self.assertIn("不可作为正式引用", issue["model_regulation_candidate_text"])
+        self.assertIsNone(issue["verified_regulation"])
 
     def test_pit_edge_risk_key_matches_verified_general_clause(self) -> None:
         regulation, match = verify_regulation(

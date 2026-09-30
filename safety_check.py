@@ -61,7 +61,7 @@ def build_single_vision_system_prompt(scene: str | None) -> str:
 4. 箱门内侧固定的系统图、接线图、责任牌、标签和说明页属于设备文件，不是箱内杂物。只有独立放置、与设备无固定关系且明确无关的物品才可判为杂物。
 5. 空间占用必须分别定位设备操作区和障碍物，证明二者边界发生实际重叠或阻断通道；仅在设备附近、透视上重叠或位于不同深度，不等于占用。
 
-人物优先检查协议：先逐人建立 persons 清单并分配 P1、P2 等编号，再判断人物风险。对每人按“头部→左手→右手→躯干→腰部→左脚→右脚”的顺序逐部位观察。装备必须按正确佩戴部位检查：安全帽对应头部，左/右手套分别对应左/右手，反光背心对应躯干，安全带对应躯干和腰部；颜色相近、手持物、背景材料或局部遮挡不得当成佩戴或未佩戴证据。左手套和右手套必须分别记录；相关部位不完整清晰时不得声称“未佩戴”，被钢筋、工具、身体或画面边缘遮挡的一侧写 uncertain。手套、面罩、护目镜等任务型防护用品只有在具体作业动作和对应危害均清晰可见、且规范明确要求时才可判缺失；仅因人员在工地或高处不得判“未戴手套”。空间位置必须以身体锚点和参照物锚点判断，优先检查双脚接触面、支撑面、临边/洞口边界、可见高差和前后遮挡关系。抬腿、跨越材料、站在低矮材料堆旁不等于攀爬或高处作业；只有人员明确位于存在可见坠落高差的高处作业面，才能写 ELEVATED_WITH_FALL_RISK。靠近钢丝绳、车辆或静置材料不等于处于吊物下方；只有吊物与支撑面明显分离、确实处于悬空或移动状态，且人员锚点位于吊物垂直投影或回转路径内，才能明确判定吊装危险区人员风险。
+人物优先检查协议：先逐人建立 persons 清单并分配 P1、P2 等编号，再判断人物风险。对每人按“头部→左手→右手→躯干→腰部→左脚→右脚”的顺序逐部位观察。装备必须按正确佩戴部位检查：安全帽对应头部，左/右手套分别对应左/右手，反光背心对应躯干，安全带对应躯干和腰部；颜色相近、手持物、背景材料或局部遮挡不得当成佩戴或未佩戴证据。左手套和右手套必须分别记录；相关部位不完整清晰时不得声称“未佩戴”，被钢筋、工具、身体或画面边缘遮挡的一侧写 uncertain。手套、面罩、护目镜、反光背心等任务型防护用品只有在具体作业动作、独立危险对象和对应危害均清晰可见，且有明确适用条款时才可判缺失；仅因人员在工地、高处或车辆附近不得判定缺少这些装备。白天照片中背心颜色、反光条外观或未出现强反光不能证明反光性能不合格，也不能据此判定穿戴不规范。每条 item 只描述一个确定状态，禁止使用“未佩戴或佩戴不规范”等二选一表述。空间位置必须以身体锚点和参照物锚点判断，优先检查双脚接触面、支撑面、临边/洞口边界、可见高差和前后遮挡关系。抬腿、跨越材料、站在低矮材料堆旁不等于攀爬或高处作业；只有人员明确位于存在可见坠落高差的高处作业面，才能写 ELEVATED_WITH_FALL_RISK。靠近钢丝绳、车辆或静置材料不等于处于吊物下方；只有吊物与支撑面明显分离、确实处于悬空或移动状态，且人员锚点位于吊物垂直投影或回转路径内，才能明确判定吊装危险区人员风险。
 
 每个风险输出一个紧贴可见违规证据的范围框。坐标基于整张输入图片，采用0到1000归一化整数，原点在左上角，格式为 [x1,y1,x2,y2]，其中x向右、y向下，x1/y1为左上角，x2/y2为右下角。范围框应包住实际违规对象/证据，不要框整张图或无关区域。若一条风险涉及彼此分离的多个位置，拆成多个风险项分别定位。无法从图中可靠定位时 bbox_2d_1000 必须为 null，禁止猜坐标；有可定位证据时必须给有效坐标。
 
@@ -836,7 +836,12 @@ def apply_person_issue_gate(
     return status
 
 
-def apply_static_image_scope_gate(issue: dict[str, Any], status: str) -> str:
+def apply_static_image_scope_gate(
+    issue: dict[str, Any],
+    status: str,
+    people_by_id: dict[str, dict[str, Any]] | None = None,
+    objects_by_id: dict[str, dict[str, Any]] | None = None,
+) -> str:
     """Downgrade claims that require design data, records, tests, or task context."""
     if status != "CLEAR":
         return status
@@ -862,22 +867,59 @@ def apply_static_image_scope_gate(issue: dict[str, Any], status: str) -> str:
     if nonvisual_key or nonvisual_text:
         return "SUSPECTED"
 
+    people_by_id = people_by_id or {}
+    objects_by_id = objects_by_id or {}
+    person_context = " ".join(
+        str(people_by_id[person_id].get("action") or "")
+        for person_id in issue.get("person_ids", [])
+        if person_id in people_by_id
+    )
+    object_context = " ".join(
+        f"{objects_by_id[object_id].get('object_type', '')} "
+        f"{objects_by_id[object_id].get('observed_state', '')}"
+        for object_id in issue.get("object_ids", [])
+        if object_id in objects_by_id
+    )
+    independent_context = f"{person_context} {object_context}".strip()
+
     if issue.get("assessment_type") == "PPE" and issue.get("ppe_item") == "gloves":
         task_hazard_visible = re.search(
             r"检修|维修|接线|带电|焊接|切割|打磨|化学|腐蚀|高温|"
             r"锐器|锋利|搬运粗糙|有毒|低温",
-            text,
+            independent_context,
         )
         if not task_hazard_visible:
             return "SUSPECTED"
     if issue.get("assessment_type") == "PPE" and issue.get("ppe_item") == "reflective_vest":
-        visibility_hazard_visible = re.search(
-            r"车辆|交通|道路|指挥|夜间|低照度|低能见度|雾|机械作业区",
-            text,
+        reflective_property_claim = re.search(
+            r"反光条|反光带|反光性能|颜色不符合|颜色不规范",
+            f"{key} {text}",
         )
-        if not visibility_hazard_visible:
+        if reflective_property_claim:
+            return "NOT_ASSESSABLE"
+        traffic_task_visible = re.search(
+            r"交通指挥|车辆引导|道路施工|交通疏导|车辆通道",
+            independent_context,
+        )
+        moving_vehicle_visible = re.search(
+            r"行驶中|移动中|倒车|车辆通道|施工道路",
+            object_context,
+        )
+        if not (traffic_task_visible and moving_vehicle_visible):
             return "SUSPECTED"
     return status
+
+
+def format_model_regulation_candidate(candidate: dict[str, Any]) -> str | None:
+    """Format an auditable candidate without presenting it as verified law."""
+    required = ("standard_name", "standard_code", "article", "clause_summary")
+    if not all(str(candidate.get(key) or "").strip() for key in required):
+        return None
+    return (
+        "模型候选（未经过本地法规目录核验，不可作为正式引用）："
+        f"《{candidate['standard_name']}》{candidate['standard_code']} "
+        f"{candidate['article']}：{candidate['clause_summary']}"
+    )
 
 
 def normalize_model_regulation(value: Any) -> dict[str, Any]:
@@ -964,6 +1006,14 @@ def strict_issue_quality_gate(
     result["model_regulation_candidate"] = candidate
     result["verified_regulation"] = verified
     result["regulation_match"] = regulation_match
+    result["model_regulation_candidate_text"] = format_model_regulation_candidate(candidate)
+    result["regulation_status"] = (
+        "VERIFIED"
+        if verified is not None
+        else "MODEL_CANDIDATE_UNVERIFIED"
+        if result["model_regulation_candidate_text"]
+        else "UNMATCHED"
+    )
     # Compatibility field: consumers that previously read `regulation` now
     # receive only a locally verified canonical clause, never a model guess.
     result["regulation"] = verified
@@ -974,7 +1024,19 @@ def strict_issue_quality_gate(
         status = "SUSPECTED"
     status = apply_claim_evidence_gate(result, status, objects_by_id)
     status = apply_person_issue_gate(result, status, people_by_id)
-    status = apply_static_image_scope_gate(result, status)
+    status = apply_static_image_scope_gate(
+        result,
+        status,
+        people_by_id=people_by_id,
+        objects_by_id=objects_by_id,
+    )
+    if status == "CLEAR" and verified is None:
+        status = "SUSPECTED"
+        result["review_reason"] = "风险有视觉线索，但尚无本地已核验的适用条款，不输出为明确违规。"
+    elif status != "CLEAR":
+        result["review_reason"] = str(result.get("review_reason") or "证据或条款适用性不足，需人工复核。")
+    else:
+        result["review_reason"] = None
     result["status"] = status if status in {"CLEAR", "SUSPECTED", "NOT_ASSESSABLE"} else "SUSPECTED"
     result["needs_review"] = bool(
         result.get("needs_review", result["status"] != "CLEAR")
@@ -1150,6 +1212,8 @@ def model_judged_report(
             f"• {regulation_label}："
             f"{issue.get('rule', format_verified_regulation(None))}"
         )
+        if issue.get("verified_regulation") is None and issue.get("model_regulation_candidate_text"):
+            lines.append(f"• {issue['model_regulation_candidate_text']}")
         regulation_match = issue.get("regulation_match")
         if isinstance(regulation_match, dict):
             lines.append(

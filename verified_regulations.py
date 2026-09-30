@@ -56,8 +56,8 @@ _GB_ROWS = (
     (
         "GENERAL_PPE_PROVISION",
         "GENERAL_SITE WORK_AT_HEIGHT LIFTING_OPERATIONS FOUNDATION_PIT TOWER_CRANE CONSTRUCTION_HOIST SCAFFOLD_COUPLER_TYPE SCAFFOLD_DISC_BUCKLE SCAFFOLD_CANTILEVER SCAFFOLD_ATTACHED_LIFTING",
-        "PPE_MISSING PERSONAL_PROTECTIVE_EQUIPMENT_MISSING HELMET_NOT_WORN GLOVES_NOT_WORN REFLECTIVE_VEST_NOT_WORN",
-        "未按作业条件配备劳动防护用品|劳动防护用品不足|未佩戴安全帽|未佩戴防护手套|未穿反光背心",
+        "PPE_MISSING PERSONAL_PROTECTIVE_EQUIPMENT_MISSING HELMET_NOT_WORN",
+        "未按作业条件配备劳动防护用品|劳动防护用品不足|未佩戴安全帽",
         "第2.0.5条",
         "应根据各工种的作业条件和劳动环境等为作业人员配备安全有效的劳动防护用品，并应及时开展劳动防护用品使用培训。",
         "https://gf.cabr-fire.com/article-62615.htm",
