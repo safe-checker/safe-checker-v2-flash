@@ -297,7 +297,7 @@ pip install -r requirements.txt
 python api_server.py
 ```
 
-默认监听 `127.0.0.1:8000`，接口文档在 `http://127.0.0.1:8000/docs`。
+默认监听 `127.0.0.1:8002`，接口文档在 `http://127.0.0.1:8002/docs`。
 
 ### 请求
 
@@ -313,7 +313,7 @@ python api_server.py
 curl 示例：
 
 ```bash
-curl -X POST "http://127.0.0.1:8000/v1/inspect" \
+curl -X POST "http://127.0.0.1:8002/v1/inspect" \
   -F "image=@/absolute/path/to/frame.jpg" \
   -F "scene=施工现场综合安全" \
   -F "prompt=检查画面中可见的施工安全风险"
@@ -322,7 +322,7 @@ curl -X POST "http://127.0.0.1:8000/v1/inspect" \
 配置访问令牌时：
 
 ```bash
-curl -X POST "http://127.0.0.1:8000/v1/inspect" \
+curl -X POST "http://127.0.0.1:8002/v1/inspect" \
   -H "X-API-Key: 替换为服务访问令牌" \
   -F "image=@/absolute/path/to/frame.jpg" \
   -F "scene=施工现场综合安全"
@@ -426,7 +426,7 @@ import requests
 
 with open("frame.jpg", "rb") as image_file:
     response = requests.post(
-        "http://127.0.0.1:8000/v1/inspect",
+        "http://127.0.0.1:8002/v1/inspect",
         files={"image": ("frame.jpg", image_file, "image/jpeg")},
         data={"scene": "施工现场综合安全"},
         timeout=12,
@@ -455,7 +455,7 @@ brew install cloudflared
 
 ```env
 API_HOST=127.0.0.1
-API_PORT=8000
+API_PORT=8002
 API_ACCESS_TOKEN=请替换为至少32位随机字符串
 CLOUDFLARE_TUNNEL_MODE=quick
 ```
@@ -487,7 +487,7 @@ curl -X POST "https://random-name.trycloudflare.com/v1/inspect" \
 
 ### 长期使用
 
-在 Cloudflare 控制台创建命名 Tunnel，把公开主机名，例如 `safety-api.example.com`，转发到 `http://127.0.0.1:8000`，复制 Tunnel token 到 `.env`：
+在 Cloudflare 控制台创建命名 Tunnel，把公开主机名，例如 `safety-api.example.com`，转发到 `http://127.0.0.1:8002`，复制 Tunnel token 到 `.env`：
 
 ```env
 CLOUDFLARE_TUNNEL_MODE=named

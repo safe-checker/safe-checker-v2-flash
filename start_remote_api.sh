@@ -30,7 +30,7 @@ if [[ -z "${API_ACCESS_TOKEN:-}" || "${API_ACCESS_TOKEN}" == "change-this-to-a-l
 fi
 
 API_HOST="${API_HOST:-127.0.0.1}"
-API_PORT="${API_PORT:-8000}"
+API_PORT="${API_PORT:-8002}"
 TUNNEL_MODE="${CLOUDFLARE_TUNNEL_MODE:-quick}"
 
 if [[ "$API_HOST" != "127.0.0.1" && "$API_HOST" != "localhost" ]]; then
