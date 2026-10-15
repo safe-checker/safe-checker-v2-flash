@@ -171,7 +171,7 @@ def analyze_image_quality(image_path: Path) -> dict[str, Any]:
         edge = gray.filter(ImageFilter.FIND_EDGES)
         edge_stat = ImageStat.Stat(edge)
         sharpness = float(edge_stat.var[0])
-        pixels = list(gray.getdata())
+        pixels = gray.get_flattened_data() if hasattr(gray, "get_flattened_data") else gray.getdata()
         total = max(1, len(pixels))
         overexposed_ratio = sum(1 for p in pixels if p >= 245) / total
         underexposed_ratio = sum(1 for p in pixels if p <= 15) / total

@@ -7,7 +7,9 @@ import asyncio
 import hmac
 import io
 import json
+import logging
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -29,12 +31,38 @@ PROCESS_TIMEOUT_SECONDS = float(os.getenv("API_PROCESS_TIMEOUT_SECONDS", "8"))
 MAX_CONCURRENT_REQUESTS = max(1, int(os.getenv("API_MAX_CONCURRENT_REQUESTS", "2")))
 ACCESS_TOKEN = os.getenv("API_ACCESS_TOKEN", "").strip()
 REQUEST_SLOTS = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Construction Safety Image Inspection API",
     version="1.0.0",
     description="Upload a construction-site image and receive a structured single-call DeepSeek Flash safety inspection with original-image bounding boxes.",
 )
+
+
+def _process_failure(completed: subprocess.CompletedProcess[str], result: Any) -> HTTPException:
+    error = result.get("error") if isinstance(result, dict) else None
+    if isinstance(error, dict):
+        message = error.get("message")
+        if isinstance(message, str) and message.strip():
+            error_type = error.get("type")
+            logger.warning("Inspection failed: returncode=%s error_type=%s", completed.returncode, error_type)
+            return HTTPException(
+                status_code=504 if error_type == "timeout" else 502,
+                detail=message.strip()[-2000:],
+            )
+    if completed.returncode < 0:
+        number = -completed.returncode
+        try:
+            name = signal.Signals(number).name
+        except ValueError:
+            name = str(number)
+        message = f"Inspection process was terminated by signal {name} ({number}). Check the service and system logs."
+    else:
+        diagnostic = completed.stderr.strip() or completed.stdout.strip() or "No error details were returned."
+        message = f"Inspection process failed (exit code {completed.returncode}): {diagnostic[-1800:]}"
+    logger.warning("Inspection process failed: returncode=%s", completed.returncode)
+    return HTTPException(status_code=502, detail=message)
 
 
 @app.get("/health")
@@ -112,17 +140,19 @@ async def inspect_image(
                     check=False,
                 )
             except subprocess.TimeoutExpired:
+                logger.warning("Inspection subprocess exceeded API_PROCESS_TIMEOUT_SECONDS=%s", PROCESS_TIMEOUT_SECONDS)
                 raise HTTPException(
                     status_code=504,
                     detail=f"Inspection exceeded the {PROCESS_TIMEOUT_SECONDS:g}-second API processing limit.",
                 )
 
-        if completed.returncode != 0:
-            message = completed.stderr.strip() or "The inspection process failed."
-            raise HTTPException(status_code=502, detail=message[-2000:])
         try:
-            result: dict[str, Any] = json.loads(completed.stdout)
+            result = json.loads(completed.stdout)
         except json.JSONDecodeError:
+            result = None
+        if completed.returncode != 0 or (isinstance(result, dict) and result.get("status") == "error"):
+            raise _process_failure(completed, result)
+        if not isinstance(result, dict):
             raise HTTPException(status_code=502, detail="The inspection process returned invalid JSON.")
         return JSONResponse(result)
     finally:

@@ -419,6 +419,25 @@ HTTP `200`，JSON 字段如下：
 
 错误响应采用 FastAPI 标准格式，例如 `{"detail":"..."}`；常见 HTTP 状态码为 `400`（空文件）、`401`（访问令牌错误）、`413`（文件过大）、`415`（不支持的图片格式）、`429`（并发繁忙）、`502`（模型流程失败）、`504`（处理超时）。
 
+API 优先读取检测脚本在标准输出中返回的 JSON 错误，Pillow 等依赖写入标准错误的警告不会覆盖真正的失败原因。脚本报告模型超时与 API 子进程超时均返回 `504`；非零退出返回 `502`，信号终止会明确报告信号名称。成功检测不会因标准错误里存在警告而被标记为失败。
+
+线上模型响应超过默认 8 秒时，需要一起调整检测脚本、API 和调用方的等待时间。例如可先按以下设置验证实际响应时间；这会延长等待上限，不保证供应商在预算内完成：
+
+```dotenv
+# Flash 项目的 .env
+REQUEST_TIMEOUT_SECONDS=30
+DEEPSEEK_VISION_TIMEOUT_SECONDS=27
+API_PROCESS_TIMEOUT_SECONDS=35
+```
+
+使用工作台时，同时在工作台 `.env` 设置 `INSPECT_TIMEOUT_SECONDS=40`，再重启 Flash API 和工作台后端。API 子进程上限应给图片预处理及结果整理留出余量，调用方上限应大于 API 上限。主系统 `L4_STAGE_TIMEOUT_SECONDS` 不参与快速筛查。发生 `SIGKILL` 时，还需核对服务器系统日志是否记录了内存不足等进程终止原因；延长超时不会修复信号终止。
+
+离线验证错误响应及图像质量兼容性：
+
+```bash
+python -m unittest -v test_api_server_offline test_safety_check_offline
+```
+
 ### 视频端 Python 调用示例
 
 ```python
