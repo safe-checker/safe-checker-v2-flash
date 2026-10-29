@@ -1,0 +1,54 @@
+[
+  {
+    "standard_code": "GB 51210-2016",
+    "clause_count": 193,
+    "passed": true,
+    "checked": 21,
+    "agreed": 20,
+    "source_url": "http://www.gzhxaq.com/mydata/law/202103/31/16171978242277.htm"
+  },
+  {
+    "standard_code": "GB 5144-2006",
+    "clause_count": 137,
+    "passed": true,
+    "checked": 3,
+    "agreed": 3,
+    "source_url": "http://fjase.cn/tzsbweb/userfiles/files/%E5%A1%94%E5%BC%8F%E8%B5%B7%E9%87%8D%E6%9C%BA%E5%AE%89%E5%85%A8%E8%A7%84%E7%A8%8BGB%205144-2006.pdf"
+  },
+  {
+    "standard_code": "JGJ 184-2009",
+    "clause_count": 57,
+    "passed": false,
+    "reason": "未做交叉校验"
+  },
+  {
+    "standard_code": "JGJ 202-2010",
+    "clause_count": 317,
+    "passed": true,
+    "checked": 2,
+    "agreed": 2,
+    "source_url": "https://www.bjjzjxhyxh.com/upload/file/20220418/1650265630407967.pdf"
+  },
+  {
+    "standard_code": "JGJ 276-2012",
+    "clause_count": 195,
+    "passed": true,
+    "checked": 1,
+    "agreed": 1,
+    "source_url": "http://www.greatchinaca.com/web/upload/at/file/20190326/1553579705574474pB5E.pdf"
+  },
+  {
+    "standard_code": "JGJ 311-2013",
+    "clause_count": 292,
+    "passed": false,
+    "reason": "规则包未覆盖该标准的条款，无法交叉校验"
+  },
+  {
+    "standard_code": "JGJ 80-2016",
+    "clause_count": 135,
+    "passed": true,
+    "checked": 2,
+    "agreed": 2,
+    "source_url": "https://zjw.sh.gov.cn/cmsres/dd/dd2874d657124e648b54c66a113fb0b1/2b641c95070e63127349d11cc3109bc6.pdf"
+  }
+]

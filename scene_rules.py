@@ -50,8 +50,6 @@ SCENE_PROFILES: dict[str, dict[str, Any]] = {
             "复杂环境",
             "general",
             "general_site",
-            "auto",
-            "自动",
         ),
         "standards": "《建筑施工安全检查标准》（JGJ 59-2011）及《建筑施工安全技术统一规范》（GB 50870）",
         "description": "施工现场通用的人员防护、通道、材料堆放、消防和警示隔离。",
@@ -659,7 +657,7 @@ SCENE_PROFILES.update(
         "SCAFFOLD_COUPLER_TYPE": _scaffold_profile(
             "SCAFFOLD_COUPLER_TYPE",
             "扣件式钢管脚手架",
-            ("扣件式脚手架", "钢管脚手架", "脚手架", "scaffold", "scaffold_coupler_type"),
+            ("扣件式脚手架", "钢管脚手架", "扣件式", "scaffold_coupler_type"),
             "《建筑施工扣件式钢管脚手架安全技术规范》（JGJ 130）",
             "扣件式钢管脚手架的杆件、扣件、连墙件、剪刀撑、脚手板和防护。",
             {"coupler_condition": "扣件、连接节点是否明显松动、脱落或破损"},
@@ -752,6 +750,31 @@ SCENE_PROFILES.update(
                 ),
             ),
         ),
+        "SCAFFOLD_FAMILY": _scaffold_profile(
+            "SCAFFOLD_FAMILY",
+            "脚手架（未确定具体型式）",
+            ("脚手架", "钢管脚手架", "scaffold", "脚手架家族", "scaffold_family"),
+            "《建筑施工扣件式钢管脚手架安全技术规范》（JGJ 130）、"
+            "《建筑施工承插型盘扣式钢管脚手架安全技术标准》（JGJ/T 231）、"
+            "《建筑施工工具式脚手架安全技术规范》（JGJ 202）及悬挑式脚手架地方标准",
+            "脚手架家族通用检查：架体构造、杆件节点、连墙或附着、剪刀撑、"
+            "作业层铺板、外侧防护和上下通道。图片无法确定具体型式时按家族清单核对。",
+            {},
+            (),
+        ),
+        "LIFTING_FAMILY": {
+            "label": "起重与升降设备（未确定具体型式）",
+            "aliases": ("起重设备", "升降设备", "吊装设备", "lifting_family", "起重与升降设备"),
+            "standards": "《建筑施工起重吊装工程安全技术规范》（JGJ 276）"
+            "《塔式起重机安全规程》（GB 5144）《施工升降机安全规程》（GB 10055）",
+            "description": "塔式起重机、施工升降机与起重吊装作业的通用检查："
+            "吊钩与防脱装置、吊具与索具、承载与吊物下方、支承与基础、"
+            "操作与通行部位、层门与围护。",
+            "object_fields": ("equipment_visible", "work_area_visible", "person_visible"),
+            "fields": {},
+            "rules": (),
+            "review_pairs": (),
+        },
     }
 )
 
@@ -781,6 +804,10 @@ SCENE_PROFILES["AUTO"] = {
 def normalize_scene(value: str | None) -> str:
     raw = str(value or "").strip().lower()
     if not raw:
+        return "AUTO"
+    # "auto" 必须走自动场景路径。综合场景的别名里也有 "auto"，
+    # 如果不在这里先判，自动模式会被当成综合场景，永远走不到家族清单分支。
+    if raw in {"auto", "未指定", "智能识别", "smart"}:
         return "AUTO"
     for key, profile in SCENE_PROFILES.items():
         aliases = {key.lower(), str(profile.get("label", "")).lower()}

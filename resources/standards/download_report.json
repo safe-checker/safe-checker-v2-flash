@@ -1,0 +1,394 @@
+[
+  {
+    "standard_code": "GB 51210-2016",
+    "standard_name": "建筑施工脚手架安全技术统一标准",
+    "status": "ok",
+    "attempts": [
+      {
+        "url": "https://zjw.sh.gov.cn/xcsc2020-jsbz/20200430/62cda953e97543e2925e1cbfa4ff3e85.html",
+        "status": 200,
+        "bytes": 6314,
+        "sha256": "616c0ceaf0cd90248c6a3135593f0b7f940a2637a645ab43c539e6153a6ee230",
+        "method": "html",
+        "text_chars": 349,
+        "clauses_parsed": 1,
+        "relevant": false
+      },
+      {
+        "url": "https://pyso.newswz.cn/upload/202111/202111061159484985.pdf",
+        "error": "URLError: <urlopen error [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of "
+      },
+      {
+        "url": "http://www.gzhxaq.com/mydata/law/202103/31/16171978242277.htm",
+        "status": 200,
+        "bytes": 472947,
+        "sha256": "8c253025baba1af6316ec0d4abdca374ceaf7d23b01c7a3928601638c648f012",
+        "method": "html",
+        "text_chars": 88172,
+        "clauses_parsed": 195,
+        "relevant": true
+      }
+    ],
+    "clause_count": 195,
+    "source_url": "http://www.gzhxaq.com/mydata/law/202103/31/16171978242277.htm",
+    "sha256": "8c253025baba1af6316ec0d4abdca374ceaf7d23b01c7a3928601638c648f012",
+    "method": "html",
+    "saved": "/Users/gjz/Documents/ChatGPT/复杂环境安全巡检/deepseek_flash_safety_checker/resources/standards/GB-51210-2016.json"
+  },
+  {
+    "standard_code": "GB 50194-2014",
+    "standard_name": "建设工程施工现场供用电安全规范",
+    "status": "pending",
+    "attempts": [
+      {
+        "url": "https://zjw.sh.gov.cn/xcsc2020-jsbz/20200430/62cda953e97543e2925e1cbfa4ff3e85.html",
+        "status": 200,
+        "bytes": 6314,
+        "sha256": "616c0ceaf0cd90248c6a3135593f0b7f940a2637a645ab43c539e6153a6ee230",
+        "method": "html",
+        "text_chars": 349,
+        "clauses_parsed": 1,
+        "relevant": true
+      },
+      {
+        "url": "https://www.gd-sct.com/uploadfile/file/20190223/20190223144834_159040018.pdf",
+        "status": 200,
+        "bytes": 4130742,
+        "sha256": "dfc6a3936496dbf040c503fa8e7dc414df9f09df81965a8714de86e1d252ae83",
+        "method": "pdf",
+        "text_chars": 83,
+        "clauses_parsed": 0,
+        "relevant": false
+      },
+      {
+        "url": "https://pyso.newswz.cn/upload/202402/202402021626192016.pdf",
+        "error": "URLError: <urlopen error [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of "
+      }
+    ],
+    "clause_count": 0
+  },
+  {
+    "standard_code": "GB 5144-2006",
+    "standard_name": "塔式起重机安全规程",
+    "status": "ok",
+    "attempts": [
+      {
+        "url": "http://www.fjase.cn/tzsbweb/userfiles/files/GB5144-2006%E5%A1%94%E5%BC%8F%E8%B5%B7%E9%87%8D%E6%9C%BA%E5%AE%89%E5%85%A8%E8%A7%84%E7%A8%8B.pdf",
+        "error": "HTTPError: HTTP Error 502: Bad Gateway"
+      },
+      {
+        "url": "http://fjase.cn/tzsbweb/userfiles/files/%E5%A1%94%E5%BC%8F%E8%B5%B7%E9%87%8D%E6%9C%BA%E5%AE%89%E5%85%A8%E8%A7%84%E7%A8%8BGB%205144-2006.pdf",
+        "status": 200,
+        "bytes": 620744,
+        "sha256": "82e85def3ef6f26ac32223423d915eac4f6c41b6e592f4fc153103b1d6ce2910",
+        "method": "pdf",
+        "text_chars": 18985,
+        "clauses_parsed": 166,
+        "relevant": true
+      }
+    ],
+    "clause_count": 166,
+    "source_url": "http://fjase.cn/tzsbweb/userfiles/files/%E5%A1%94%E5%BC%8F%E8%B5%B7%E9%87%8D%E6%9C%BA%E5%AE%89%E5%85%A8%E8%A7%84%E7%A8%8BGB%205144-2006.pdf",
+    "sha256": "82e85def3ef6f26ac32223423d915eac4f6c41b6e592f4fc153103b1d6ce2910",
+    "method": "pdf",
+    "saved": "/Users/gjz/Documents/ChatGPT/复杂环境安全巡检/deepseek_flash_safety_checker/resources/standards/GB-5144-2006.json"
+  },
+  {
+    "standard_code": "GB 10055-2007",
+    "standard_name": "建设工程施工现场临时用电安全技术规范",
+    "status": "pending",
+    "attempts": [
+      {
+        "url": "https://max.book118.com/html/2026/0528/5110130233013221.shtm",
+        "status": 200,
+        "bytes": 55000,
+        "sha256": "2312fdb36718cbb5f5fc4224b651d5520b14b389f01cb7f191c82b5f3c114a95",
+        "method": "html",
+        "text_chars": 3457,
+        "clauses_parsed": 6,
+        "relevant": false
+      },
+      {
+        "url": "http://www.woc88.com/v-115088515.html",
+        "status": 200,
+        "bytes": 49254,
+        "sha256": "35fff6770992052bb1bc115d7b898565c52b2dfdc6da7358e3b6af0f2a3c97c9",
+        "method": "html",
+        "text_chars": 5630,
+        "clauses_parsed": 5,
+        "relevant": false
+      },
+      {
+        "url": "https://www.guanlixi.com/guicheng/anquanguicheng/17823776229851.html",
+        "status": 200,
+        "bytes": 34441,
+        "sha256": "acd67bd01ec4b0e7eddfdd4e3e11c1f1577e09d5f5e45d11b02ee5ba526cf8a7",
+        "method": "html",
+        "text_chars": 8059,
+        "clauses_parsed": 4,
+        "relevant": false
+      }
+    ],
+    "clause_count": 0
+  },
+  {
+    "standard_code": "GB/T 34023-2017",
+    "standard_name": "施工升降机安全规程",
+    "status": "pending",
+    "attempts": [
+      {
+        "url": "https://openstd.samr.gov.cn/bzgk/gb/review?hcno=E0E98789A490D8771030921A2121C9C5",
+        "status": 200,
+        "bytes": 78979,
+        "sha256": "45b13d564904812fd41eb94dc39e16fd7d08e7d4c66091dbeb881986866851d0",
+        "method": "html",
+        "text_chars": 4759,
+        "clauses_parsed": 2,
+        "relevant": true
+      },
+      {
+        "url": "https://www.spc.org.cn/online/19c33e9e803f1cb82292008705113c47.html",
+        "status": 200,
+        "bytes": 44420,
+        "sha256": "b21c1eabea0ba2da89bd3c7dbd7f1200fa80e125a64d70bc1543e565111c9b35",
+        "method": "html",
+        "text_chars": 5002,
+        "clauses_parsed": 0,
+        "relevant": true
+      }
+    ],
+    "clause_count": 0
+  },
+  {
+    "standard_code": "GB/T 5031-2019",
+    "standard_name": "塔式起重机",
+    "status": "pending",
+    "attempts": [
+      {
+        "url": "https://img.antpedia.com/standard/files/pdfs_ora/GB2025/4/GB_T%205031-2019.pdf",
+        "status": 200,
+        "bytes": 174137,
+        "sha256": "5389538c5ca3f559286c43e387aef36fa8f579ceda670c0bcce25aa3c84107f7",
+        "method": "pdf",
+        "text_chars": 2254,
+        "clauses_parsed": 1,
+        "relevant": false
+      },
+      {
+        "url": "https://openstd.samr.gov.cn/bzgk/gb/review?hcno=4172433399BA4304E871C0EE67688FD9",
+        "status": 200,
+        "bytes": 88796,
+        "sha256": "209ba2f9b8b3ea943a902415b5b2c7144c1ac9bcb419695386a9712bdd5720a8",
+        "method": "html",
+        "text_chars": 6165,
+        "clauses_parsed": 2,
+        "relevant": true
+      }
+    ],
+    "clause_count": 0
+  },
+  {
+    "standard_code": "JGJ 130-2011",
+    "standard_name": "建筑施工扣件式钢管脚手架安全技术规范",
+    "status": "pending",
+    "attempts": [
+      {
+        "url": "https://zjw.sh.gov.cn/xcsc2020-jsbz/20200430/11f8593c4565476eab642d472b29afda.html",
+        "status": 200,
+        "bytes": 6341,
+        "sha256": "2eb09be4b410c171ebe94d77d9b0769febb72279ee77703982258013c63bee9d",
+        "method": "html",
+        "text_chars": 355,
+        "clauses_parsed": 1,
+        "relevant": true
+      },
+      {
+        "url": "https://jncc.jinan.gov.cn/attach/0/31240ead62384ec5ad66ab07f7cc151a.pdf",
+        "status": 200,
+        "bytes": 8791860,
+        "sha256": "7f02446a13ed245e8bd82f1d3ced307e171c960026bdb73f2d93adab1de74558",
+        "method": "pdf",
+        "text_chars": 67,
+        "clauses_parsed": 0,
+        "relevant": false
+      },
+      {
+        "url": "https://img.antpedia.com/standard/files/pdfs_ora/CN-JG/a3f/JGJ%20130-2011_1250.pdf",
+        "status": 200,
+        "bytes": 212983,
+        "sha256": "7e4b6be081dd8eb1d0a5f298071cc83cd662e13cbaf64a9aefe8ee7f1632685a",
+        "method": "pdf",
+        "text_chars": 2,
+        "clauses_parsed": 0,
+        "relevant": false
+      }
+    ],
+    "clause_count": 0
+  },
+  {
+    "standard_code": "JGJ 202-2010",
+    "standard_name": "建筑施工工具式脚手架安全技术规范",
+    "status": "ok",
+    "attempts": [
+      {
+        "url": "https://www.bjjzjxhyxh.com/upload/file/20220418/1650265630407967.pdf",
+        "status": 200,
+        "bytes": 1110989,
+        "sha256": "21ab4f04acb87689bbbaa03db1f8ca4ec1d80c919c0fe677e782242ab25dad3f",
+        "method": "pdf",
+        "text_chars": 37536,
+        "clauses_parsed": 317,
+        "relevant": true
+      }
+    ],
+    "clause_count": 317,
+    "source_url": "https://www.bjjzjxhyxh.com/upload/file/20220418/1650265630407967.pdf",
+    "sha256": "21ab4f04acb87689bbbaa03db1f8ca4ec1d80c919c0fe677e782242ab25dad3f",
+    "method": "pdf",
+    "saved": "/Users/gjz/Documents/ChatGPT/复杂环境安全巡检/deepseek_flash_safety_checker/resources/standards/JGJ-202-2010.json"
+  },
+  {
+    "standard_code": "JGJ 276-2012",
+    "standard_name": "建筑施工起重吊装工程安全技术规范",
+    "status": "ok",
+    "attempts": [
+      {
+        "url": "http://www.greatchinaca.com/web/upload/at/file/20190326/1553579705574474pB5E.pdf",
+        "status": 200,
+        "bytes": 505354,
+        "sha256": "496344233c0245b71f9165c96a53a2d984311af1216b11a4f0bae2b6f05ca27f",
+        "method": "pdf",
+        "text_chars": 41782,
+        "clauses_parsed": 195,
+        "relevant": true
+      }
+    ],
+    "clause_count": 195,
+    "source_url": "http://www.greatchinaca.com/web/upload/at/file/20190326/1553579705574474pB5E.pdf",
+    "sha256": "496344233c0245b71f9165c96a53a2d984311af1216b11a4f0bae2b6f05ca27f",
+    "method": "pdf",
+    "saved": "/Users/gjz/Documents/ChatGPT/复杂环境安全巡检/deepseek_flash_safety_checker/resources/standards/JGJ-276-2012.json"
+  },
+  {
+    "standard_code": "JGJ 311-2013",
+    "standard_name": "建筑地基基础工程施工质量验收标准",
+    "status": "ok",
+    "attempts": [
+      {
+        "url": "https://zjw.sh.gov.cn/cmsres/6a/6aef2a7335fe4f7ca26d2a7b7f7ba031/2339f14d07a5a74c66574069fd3d7467.pdf",
+        "status": 200,
+        "bytes": 6189219,
+        "sha256": "f3795160d29c600651c893d741c84fc63acd685646191b0d9a7b5287c1df8228",
+        "method": "pdf",
+        "text_chars": 81283,
+        "clauses_parsed": 306,
+        "relevant": true
+      }
+    ],
+    "clause_count": 306,
+    "source_url": "https://zjw.sh.gov.cn/cmsres/6a/6aef2a7335fe4f7ca26d2a7b7f7ba031/2339f14d07a5a74c66574069fd3d7467.pdf",
+    "sha256": "f3795160d29c600651c893d741c84fc63acd685646191b0d9a7b5287c1df8228",
+    "method": "pdf",
+    "saved": "/Users/gjz/Documents/ChatGPT/复杂环境安全巡检/deepseek_flash_safety_checker/resources/standards/JGJ-311-2013.json"
+  },
+  {
+    "standard_code": "JGJ 80-2016",
+    "standard_name": "建筑施工高处作业安全技术规范",
+    "status": "ok",
+    "attempts": [
+      {
+        "url": "https://zjw.sh.gov.cn/cmsres/dd/dd2874d657124e648b54c66a113fb0b1/2b641c95070e63127349d11cc3109bc6.pdf",
+        "status": 200,
+        "bytes": 2512953,
+        "sha256": "cdc890672db8f663da46b105c7179db2d3080a440eeb708d98424bd22dadcf80",
+        "method": "pdf",
+        "text_chars": 32265,
+        "clauses_parsed": 144,
+        "relevant": true
+      }
+    ],
+    "clause_count": 144,
+    "source_url": "https://zjw.sh.gov.cn/cmsres/dd/dd2874d657124e648b54c66a113fb0b1/2b641c95070e63127349d11cc3109bc6.pdf",
+    "sha256": "cdc890672db8f663da46b105c7179db2d3080a440eeb708d98424bd22dadcf80",
+    "method": "pdf",
+    "saved": "/Users/gjz/Documents/ChatGPT/复杂环境安全巡检/deepseek_flash_safety_checker/resources/standards/JGJ-80-2016.json"
+  },
+  {
+    "standard_code": "JGJ 184-2009",
+    "standard_name": "建筑施工作业劳动防护用品配备及使用标准",
+    "status": "ok",
+    "attempts": [
+      {
+        "url": "https://zjw.sh.gov.cn/cmsres/eb/eb9580714ac449c2957b02d8533bee10/a15f1ff0d0d2e9610a3a7cea517fa9d0.pdf",
+        "status": 200,
+        "bytes": 489553,
+        "sha256": "d8dac6a2ffe2fbeac20971518021bcd49ace109e76ab6f2f735826de6ce656dd",
+        "method": "pdf",
+        "text_chars": 8910,
+        "clauses_parsed": 57,
+        "relevant": true
+      }
+    ],
+    "clause_count": 57,
+    "source_url": "https://zjw.sh.gov.cn/cmsres/eb/eb9580714ac449c2957b02d8533bee10/a15f1ff0d0d2e9610a3a7cea517fa9d0.pdf",
+    "sha256": "d8dac6a2ffe2fbeac20971518021bcd49ace109e76ab6f2f735826de6ce656dd",
+    "method": "pdf",
+    "saved": "/Users/gjz/Documents/ChatGPT/复杂环境安全巡检/deepseek_flash_safety_checker/resources/standards/JGJ-184-2009.json"
+  },
+  {
+    "standard_code": "JGJ/T 231-2021",
+    "standard_name": "建筑施工承插型盘扣式钢管脚手架安全技术规程",
+    "status": "pending",
+    "attempts": [
+      {
+        "url": "https://img.antpedia.com/standard/files/pdfs_ora/20250325/1/JGJ%20231-2021.pdf",
+        "status": 200,
+        "bytes": 351199,
+        "sha256": "6dfb928b50962ffde1a8623055d5a8cff2ca651aa20001b4fac76c7d66533607",
+        "method": "pdf",
+        "text_chars": 2,
+        "clauses_parsed": 0,
+        "relevant": false
+      },
+      {
+        "url": "https://www.ahjzu.edu.cn/jsxh/2021/0827/c10907a175013/page.htm",
+        "status": 200,
+        "bytes": 24335,
+        "sha256": "1c0dd8f98310db7a94a7594788ba5309a96794123f03480260bcd43c25175c63",
+        "method": "html",
+        "text_chars": 2472,
+        "clauses_parsed": 1,
+        "relevant": true
+      }
+    ],
+    "clause_count": 0
+  },
+  {
+    "standard_code": "DG/TJ 08-2002-2006",
+    "standard_name": "悬挑式脚手架安全技术规程",
+    "status": "pending",
+    "attempts": [
+      {
+        "url": "https://zjw.sh.gov.cn/shsd/userfiles/143%E6%82%AC%E6%8C%91%E5%BC%8F%E8%84%9A%E6%89%8B%E6%9E%B6%E5%AE%89%E5%85%A8%E6%8A%80%E6%9C%AF%E8%A7%84%E7%A8%8B.pdf",
+        "status": 200,
+        "bytes": 853992,
+        "sha256": "414d2d5e5288543c24f6fde7dafe6dcb46890e367e7b743a7aa5675613ab6e94",
+        "method": "pdf",
+        "text_chars": 21,
+        "clauses_parsed": 0,
+        "relevant": false
+      },
+      {
+        "url": "https://www.biaozhuns.com/archives/20160920/show-154485-83-1.html",
+        "status": 200,
+        "bytes": 17675,
+        "sha256": "67e3b51ba63624538149e97ae95031d668046fbf40fc3407a5671d95714838c4",
+        "method": "html",
+        "text_chars": 1946,
+        "clauses_parsed": 0,
+        "relevant": true
+      }
+    ],
+    "clause_count": 0
+  }
+]

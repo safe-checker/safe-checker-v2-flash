@@ -27,14 +27,30 @@ class ApiErrorTests(unittest.TestCase):
         buffer = io.BytesIO()
         Image.new("RGB", (16, 12), (128, 128, 128)).save(buffer, format="PNG")
         self.image = buffer.getvalue()
-        self.stack = self.enterContext(patch.object(api_server, "ACCESS_TOKEN", ""))
-        self.enterContext(patch.object(api_server, "REQUEST_SLOTS", asyncio.Semaphore(2)))
-        self.client = self.enterContext(TestClient(api_server.app))
+        # 本仓库的 .venv 是 Python 3.9，没有 unittest.TestCase.enterContext（3.11+），
+        # 这里用 addCleanup 保持同样的语义。
+        # 别的测试模块跑过 asyncio.run() 之后，全局事件循环会被清空。
+        # Python 3.9 的 Semaphore 与 TestClient 都依赖当前循环，所以先建循环再建它们。
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self.addCleanup(loop.close)
+        for name, value in (("ACCESS_TOKEN", ""), ("REQUEST_SLOTS", asyncio.Semaphore(2))):
+            patcher = patch.object(api_server, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        client_patcher = TestClient(api_server.app)
+        client_patcher.__enter__()
+        self.addCleanup(client_patcher.__exit__, None, None, None)
+        self.client = client_patcher
 
-    def inspect(self, completed):
-        with patch.object(api_server.subprocess, "run", return_value=completed) as run:
+    def inspect(self, completed, retries: int = 0):
+        """One inspection call. `retries` defaults to 0 so the error contract is
+        tested without the transient-retry layer in the way."""
+        with patch.object(api_server, "TRANSIENT_RETRIES", retries), \
+                patch.object(api_server.subprocess, "run", return_value=completed) as run:
             response = self.client.post("/v1/inspect", files={"image": ("scene.png", self.image, "image/png")})
-        run.assert_called_once()
+        if retries == 0:
+            run.assert_called_once()
         return response
 
     def test_json_error_is_not_hidden_by_stderr_warning(self):
@@ -87,6 +103,45 @@ class ApiErrorTests(unittest.TestCase):
         self.assertIn("API processing limit", response.json()["detail"])
         response = self.inspect(subprocess.CompletedProcess([], 0, '{"status":"success","issues":[]}', ""))
         self.assertEqual(response.status_code, 200)
+
+
+class TransientRetryTests(unittest.TestCase):
+    """A timeout is worth another attempt; a real answer is not."""
+
+    def setUp(self):
+        buffer = io.BytesIO()
+        Image.new("RGB", (16, 12), (128, 128, 128)).save(buffer, format="PNG")
+        self.image = buffer.getvalue()
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self.addCleanup(loop.close)
+        for name, value in (("ACCESS_TOKEN", ""), ("REQUEST_SLOTS", asyncio.Semaphore(2))):
+            patcher = patch.object(api_server, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_timeout_is_retried_once_and_still_reports_504(self):
+        failure = {"status": "error", "error": {"type": "timeout", "message": "budget exhausted"}}
+        completed = subprocess.CompletedProcess([], 1, json.dumps(failure), "")
+        with patch.object(api_server, "TRANSIENT_RETRIES", 1), \
+                patch.object(api_server.subprocess, "run", return_value=completed) as run:
+            with TestClient(api_server.app) as client:
+                response = client.post(
+                    "/v1/inspect", files={"image": ("scene.png", self.image, "image/png")})
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(response.status_code, 504)
+        self.assertEqual(response.json(), {"detail": "budget exhausted"})
+
+    def test_a_real_process_error_is_not_retried(self):
+        failure = {"status": "error", "error": {"type": "processing_error", "message": "bad report"}}
+        completed = subprocess.CompletedProcess([], 1, json.dumps(failure), "")
+        with patch.object(api_server, "TRANSIENT_RETRIES", 1), \
+                patch.object(api_server.subprocess, "run", return_value=completed) as run:
+            with TestClient(api_server.app) as client:
+                response = client.post(
+                    "/v1/inspect", files={"image": ("scene.png", self.image, "image/png")})
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(response.status_code, 502)
 
 
 class ImageQualityCompatibilityTests(unittest.TestCase):

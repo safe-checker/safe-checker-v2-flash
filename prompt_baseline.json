@@ -1,0 +1,48 @@
+{
+  "note": "提示词基线指纹。改提示词后重跑本脚本并提交差异，便于各条线核对是否越界修改。",
+  "blocks": {
+    "semantic_body": {
+      "sha256_16": "476f13892836889f",
+      "chars": 3730
+    },
+    "output_format_compact": {
+      "sha256_16": "30bf7e574d25c10d",
+      "chars": 2170
+    },
+    "output_format_full": {
+      "sha256_16": "74508607193d44a0",
+      "chars": 3386
+    }
+  },
+  "checklist": {
+    "enabled_scenes": [
+      "SCAFFOLD_CANTILEVER",
+      "SCAFFOLD_COUPLER_TYPE",
+      "SCAFFOLD_DISC_BUCKLE",
+      "SCAFFOLD_ATTACHED_LIFTING",
+      "FOUNDATION_PIT",
+      "TOWER_CRANE",
+      "CONSTRUCTION_HOIST",
+      "LIFTING_OPERATIONS",
+      "TEMPORARY_ELECTRICITY",
+      "WORK_AT_HEIGHT",
+      "GENERAL_SITE"
+    ],
+    "scantilever_dimensions": 11,
+    "scantilever_chars": 860,
+    "sha256_16": "b1433c496615c18c"
+  },
+  "block_owners": {
+    "role_and_scene": "主控",
+    "inspection_requirements": "A 对象清单线",
+    "image_input_note": "主控",
+    "object_state_protocol": "主控",
+    "person_protocol": "主控",
+    "checklist": "D 检查清单线",
+    "bounding_box": "主控",
+    "regulation": "B 条款回填线",
+    "risk_keys": "主控",
+    "status_definition": "主控",
+    "output_format": "C 关系线索线 / 主控"
+  }
+}

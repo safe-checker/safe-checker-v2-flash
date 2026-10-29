@@ -1,18 +1,39 @@
+import asyncio
+import base64
 import io
 import json
+import os
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
+
+import httpx
+from PIL import Image
 
 from safety_check import (
+    _backfill_regulation_from_catalog,
     apply_static_image_scope_gate,
     bbox_1000_to_original,
     build_single_vision_system_prompt,
     build_vision_payload,
+    call_deepseek,
+    is_transient_model_error,
+    ModelBudgetExhausted,
+    ModelQuotaError,
     emit_cli_error,
+    expand_compact_result,
+    extract_json_object,
     model_judged_report,
     normalize_fact_result,
     normalize_bbox_1000,
+    original_image_size,
+    parse_detail_crop,
+    prepare_detail_crop_data_url,
+    prepare_image_data_url,
+    select_auto_crop_from_image,
 )
 from verified_regulations import verify_regulation
 
@@ -91,8 +112,105 @@ class SingleModelCoordinateTests(unittest.TestCase):
         )
         self.assertEqual(payload["response_format"], {"type": "json_object"})
 
+    def test_vision_payload_can_add_one_detail_crop_in_same_call(self) -> None:
+        payload = build_vision_payload(
+            image_data_url="data:image/jpeg;base64,FULL",
+            detail_image_data_url="data:image/jpeg;base64,CROP",
+            detail_crop_box_1000=[100, 200, 700, 800],
+            system_prompt="system",
+            user_text="user",
+            model="deepseek-flash",
+            image_detail="low",
+            max_tokens=1000,
+            temperature=0.0,
+            reasoning_effort="none",
+        )
+        content = payload["messages"][1]["content"]
+        self.assertEqual(
+            [item["type"] for item in content],
+            ["text", "image_url", "text", "image_url"],
+        )
+        self.assertIn("空间关系", content[2]["text"])
+        self.assertIn("[100, 200, 700, 800]", content[2]["text"])
+
+    def test_detail_crop_uses_original_image_normalized_grid(self) -> None:
+        self.assertEqual(
+            parse_detail_crop("100,200,700,800", (2000, 1000)),
+            (200, 200, 1400, 800),
+        )
+
+    def test_detail_crop_rejects_invalid_or_outside_coordinates(self) -> None:
+        for value in ("nan,0,100,100", "0,0,inf,100", "-1,0,500,500",
+                      "0,0,1001,500", "500,0,100,100", "0,0,0,100", "1,2,3"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                parse_detail_crop(value, (2000, 1000))
+
+    def test_tiny_images_never_crop_outside_original_bounds(self) -> None:
+        self.assertEqual(parse_detail_crop("0,0,1000,1000", (1, 1)), (0, 0, 1, 1))
+        self.assertEqual(select_auto_crop_from_image(Image.new("RGB", (1, 1))), (0, 0, 1, 1))
+
+    def test_detail_crop_uses_exif_oriented_image_and_keeps_real_detail(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rotated.jpg"
+            image = Image.new("RGB", (200, 100), "red")
+            image.paste("blue", (100, 0, 200, 100))
+            exif = Image.Exif()
+            exif[274] = 6
+            image.save(path, exif=exif, quality=100)
+            size = original_image_size(path)
+            self.assertEqual(size, (100, 200))
+            box = parse_detail_crop("0,0,1000,500", size)
+            self.assertEqual(box, (0, 0, 100, 100))
+            full = prepare_image_data_url(path, max_edge=160, quality=90)
+            crop = prepare_detail_crop_data_url(path, box, max_edge=80, quality=90)
+            with Image.open(io.BytesIO(base64.b64decode(full.split(",", 1)[1]))) as encoded:
+                self.assertEqual(encoded.size, (80, 160))
+            with Image.open(io.BytesIO(base64.b64decode(crop.split(",", 1)[1]))) as encoded:
+                self.assertEqual(encoded.size, (80, 80))
+                red, green, blue = encoded.getpixel((40, 40))
+                self.assertGreater(red, 200)
+                self.assertLess(blue, 30)
+            with self.assertRaises(ValueError):
+                prepare_detail_crop_data_url(path, (0, 0, 101, 100), max_edge=80, quality=90)
+
+    def test_crop_main_decodes_original_only_once(self) -> None:
+        from safety_check import main
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "image.png"
+            Image.new("RGB", (200, 100)).save(path)
+            output = io.StringIO()
+            with patch("sys.argv", ["safety_check.py", str(path), "--dry-run", "--detail-crop", "0,0,500,1000"]), \
+                    patch.dict(os.environ, {"MAX_IMAGE_EDGE": "100", "DETAIL_CROP_MAX_EDGE": "100"}), \
+                    patch("safety_check.Image.open", wraps=Image.open) as opened, redirect_stdout(output):
+                self.assertEqual(main(), 0)
+            self.assertEqual(opened.call_count, 1)
+            result = json.loads(output.getvalue())
+            self.assertEqual(result["image_inputs"], 2)
+            self.assertEqual(result["detail_crop"]["bbox_original_px"], {
+                "x": 0, "y": 0, "width": 100, "height": 100,
+            })
+
+    def test_request_deadline_cancels_slow_provider_without_retry(self) -> None:
+        client = AsyncMock()
+        client.__aenter__.return_value = client
+        cancelled = []
+
+        async def delayed_response(*args, **kwargs):
+            try:
+                await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                cancelled.append(True)
+                raise
+
+        client.post.side_effect = delayed_response
+        with patch("safety_check.httpx.AsyncClient", return_value=client), self.assertRaises(httpx.TimeoutException):
+            call_deepseek({}, "test-key", "https://example.invalid", timeout_seconds=0.01)
+        self.assertEqual(cancelled, [True])
+        self.assertEqual(client.post.await_count, 1)
+
     def test_single_model_prompt_requires_full_image_normalized_boxes(self) -> None:
-        prompt = build_single_vision_system_prompt(None)
+        prompt = build_single_vision_system_prompt(None, compact=False)
         self.assertIn("bbox_2d_1000", prompt)
         self.assertIn("0到1000归一化整数", prompt)
         self.assertIn("禁止猜坐标", prompt)
@@ -247,7 +365,12 @@ class SingleModelCoordinateTests(unittest.TestCase):
         result = normalize_fact_result(data, original_size=(1000, 1000))
         self.assertEqual(result["issues"][0]["status"], "NOT_ASSESSABLE")
 
-    def test_model_detected_scene_is_not_overwritten_by_scene_hint(self) -> None:
+    def test_report_scene_follows_the_hint_because_the_hint_selects_the_checklist(self) -> None:
+        """Since the scene hint picks the checklist, it also defines what was inspected.
+
+        The model's own guess is kept separately so a mismatch stays visible
+        instead of silently relabelling the report.
+        """
         result = normalize_fact_result(
             {
                 "scene_type": "CONSTRUCTION_HOIST",
@@ -259,9 +382,11 @@ class SingleModelCoordinateTests(unittest.TestCase):
             scene_override="施工现场临时用电",
             original_size=(1000, 1000),
         )
-        self.assertEqual(result["scene_type"], "CONSTRUCTION_HOIST")
-        self.assertEqual(result["scene"], "施工升降机")
+        self.assertEqual(result["scene_type"], "TEMPORARY_ELECTRICITY")
+        self.assertEqual(result["scene"], "临时用电/配电箱")
         self.assertEqual(result["scene_hint"], "施工现场临时用电")
+        self.assertEqual(result["model_detected_scene"], "CONSTRUCTION_HOIST")
+        self.assertEqual(result["model_scene_confidence"], 0.92)
 
     def test_old_electric_standard_is_replaced_by_current_verified_clause(self) -> None:
         result = normalize_fact_result(
@@ -971,5 +1096,389 @@ class SingleModelCoordinateTests(unittest.TestCase):
         self.assertNotIn("1. 不可判断", report)
 
 
+class SceneFamilyChecklistTests(unittest.TestCase):
+    """The merged family checklist and the subject anchors it carries."""
+
+    def test_family_checklist_merges_every_scaffold_subtype(self) -> None:
+        from scene_checklists import SCENE_CHECKLISTS, SCENE_FAMILY_CHECKLISTS
+
+        family = SCENE_FAMILY_CHECKLISTS["SCAFFOLD_FAMILY"]
+        single = SCENE_CHECKLISTS["SCAFFOLD_COUPLER_TYPE"]
+        self.assertGreater(family["dimension_count"], single["dimension_count"])
+        self.assertEqual(
+            set(family["scenes"]),
+            {"SCAFFOLD_CANTILEVER", "SCAFFOLD_COUPLER_TYPE",
+             "SCAFFOLD_DISC_BUCKLE", "SCAFFOLD_ATTACHED_LIFTING"},
+        )
+        # 子类特有维度必须写明适用条件，避免在图片里不是该型式时误报
+        scoped = [line for line in family["lines"] if "仅" in line and "适用" in line]
+        self.assertTrue(scoped)
+        for line in scoped:
+            self.assertTrue(any(word in line for word in ("悬挑式", "扣件式", "盘扣式", "附着升降式")))
+
+    def test_family_core_skips_dimensions_the_person_protocol_already_covers(self) -> None:
+        from scene_checklists import GLOBAL_DIMENSIONS, SCENE_FAMILY_CHECKLISTS
+
+        for data in SCENE_FAMILY_CHECKLISTS.values():
+            for line in data["core_lines"]:
+                for dimension in GLOBAL_DIMENSIONS:
+                    self.assertNotIn(dimension, line)
+
+    def test_subject_anchor_is_off_by_default_but_switchable(self) -> None:
+        """94 张配对实测：锚点开 81.7%、关 84.0%，方向为负，所以默认关闭。"""
+        import os
+
+        from scene_checklists import SCENE_CHECKLISTS
+
+        lines = SCENE_CHECKLISTS["TOWER_CRANE"]["lines"]
+        self.assertFalse([line for line in lines if line.startswith("- [")])
+        previous = os.environ.get("CHECKLIST_SUBJECT_ANCHOR")
+        os.environ["CHECKLIST_SUBJECT_ANCHOR"] = "1"
+        try:
+            from safety_check import build_scene_checklist_section
+
+            section = build_scene_checklist_section("TOWER_CRANE")
+        finally:
+            if previous is None:
+                os.environ.pop("CHECKLIST_SUBJECT_ANCHOR", None)
+            else:
+                os.environ["CHECKLIST_SUBJECT_ANCHOR"] = previous
+        self.assertIn("[塔机吊钩与钩口]", section)
+
+    def test_auto_path_defaults_to_the_subject_list(self) -> None:
+        """94 张配对实测：主体清单 72.1% > 场景预览 67.7% > 家族清单 62.9%。"""
+        from safety_check import build_scene_checklist_section
+
+        section = build_scene_checklist_section("AUTO")
+        self.assertIn("本场景主体清单", section)
+        self.assertIn("主体[", section)
+        self.assertIn("违规:", section)
+
+    def test_auto_path_family_mode_still_works(self) -> None:
+        import os
+
+        from safety_check import build_scene_checklist_section
+
+        previous = os.environ.get("CHECKLIST_AUTO_MODE")
+        os.environ["CHECKLIST_AUTO_MODE"] = "family"
+        try:
+            section = build_scene_checklist_section("AUTO")
+        finally:
+            if previous is None:
+                os.environ.pop("CHECKLIST_AUTO_MODE", None)
+            else:
+                os.environ["CHECKLIST_AUTO_MODE"] = previous
+        self.assertIn("【脚手架】", section)
+        self.assertIn("【起重与升降设备】", section)
+        self.assertIn("违规:", section)
+        # 不逐个场景罗列，避免模型去猜子类
+        self.assertNotIn("【扣件式钢管脚手架】", section)
+
+    def test_subject_checklist_covers_every_rule_with_a_subject(self) -> None:
+        from scene_checklists import SUBJECT_CHECKLIST, SUBJECT_CHECKLIST_LINES
+        from rulepack_catalog import RULEPACK_ROWS
+
+        self.assertEqual(len(SUBJECT_CHECKLIST), len(SUBJECT_CHECKLIST_LINES))
+        # 规则包里的每一条规则都要能挂到一个主体上
+        self.assertTrue(all(row.get("triggers") for row in RULEPACK_ROWS))
+        dims = {d["dimension"] for group in SUBJECT_CHECKLIST for d in group["dimensions"]}
+        expected = {row["judge_dimension"] for row in RULEPACK_ROWS}
+        self.assertEqual(dims, expected)
+        # 同一个维度可以挂在多个主体上，所以主体-维度对会多于规则数
+        bound = sum(len(group["dimensions"]) for group in SUBJECT_CHECKLIST)
+        self.assertGreater(bound, len(expected))
+        for line in SUBJECT_CHECKLIST_LINES:
+            self.assertTrue(line.startswith("- 主体["))
+
+    def test_subject_mode_does_not_require_a_scene_label(self) -> None:
+        import os
+        from safety_check import build_scene_checklist_section
+
+        previous = os.environ.get("CHECKLIST_AUTO_MODE")
+        os.environ["CHECKLIST_AUTO_MODE"] = "subject"
+        try:
+            section = build_scene_checklist_section("AUTO")
+        finally:
+            if previous is None:
+                os.environ.pop("CHECKLIST_AUTO_MODE", None)
+            else:
+                os.environ["CHECKLIST_AUTO_MODE"] = previous
+        self.assertIn("主体[", section)
+        self.assertIn("主体不存在直接跳过", section)
+
+    def test_risk_item_cap_is_configurable_and_bounded(self) -> None:
+        import os
+
+        from safety_check import build_single_vision_system_prompt, max_risk_items
+
+        self.assertEqual(max_risk_items(), 3)
+        previous = os.environ.get("MAX_RISK_ITEMS")
+        os.environ["MAX_RISK_ITEMS"] = "5"
+        try:
+            self.assertEqual(max_risk_items(), 5)
+            prompt = build_single_vision_system_prompt("高处作业", compact=True)
+        finally:
+            if previous is None:
+                os.environ.pop("MAX_RISK_ITEMS", None)
+            else:
+                os.environ["MAX_RISK_ITEMS"] = previous
+        self.assertIn("最多输出5条", prompt)
+        self.assertNotIn("{MAX_RISK_ITEMS}", prompt)
+
+    def test_scene_token_auto_is_not_the_general_site(self) -> None:
+        from scene_rules import normalize_scene
+
+        self.assertEqual(normalize_scene("auto"), "AUTO")
+        self.assertEqual(normalize_scene("AUTO"), "AUTO")
+        self.assertEqual(normalize_scene(None), "AUTO")
+
+    def test_generic_scaffold_request_uses_the_family_checklist(self) -> None:
+        from scene_rules import normalize_scene
+        from safety_check import build_scene_checklist_section
+
+        self.assertEqual(normalize_scene("脚手架"), "SCAFFOLD_FAMILY")
+        section = build_scene_checklist_section("SCAFFOLD_FAMILY")
+        self.assertIn("悬挑式", section)
+        self.assertIn("盘扣式", section)
+        # 具体型式仍然走各自的精确清单
+        self.assertEqual(normalize_scene("扣件式钢管脚手架"), "SCAFFOLD_COUPLER_TYPE")
+        self.assertEqual(normalize_scene("悬挑式脚手架"), "SCAFFOLD_CANTILEVER")
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class CompactOutputTests(unittest.TestCase):
+    """Compact mode trades long key names for short ones; expansion must be lossless."""
+
+    def test_compact_prompt_keeps_semantic_rules(self) -> None:
+        compact = build_single_vision_system_prompt("悬挑式脚手架", compact=True)
+        full = build_single_vision_system_prompt("悬挑式脚手架", compact=False)
+        self.assertIn("箱门关闭但未上锁", compact)
+        self.assertIn("至少2条相互独立的直接视觉线索", compact)
+        self.assertIn("法规匹配范围不得局限于临时用电", compact)
+        self.assertIn('"iss"', compact)
+        self.assertNotIn('"claim_validation"', compact)
+        head = compact[: compact.index("只输出一个合法JSON对象")]
+        self.assertEqual(head, full[: full.index("只输出一个合法JSON对象")])
+
+    def test_compact_expansion_restores_canonical_keys(self) -> None:
+        raw = {
+            "st": "SCAFFOLD_CANTILEVER", "sc": "悬挑式脚手架", "sconf": 0.8, "sev": ["钢梁"],
+            "objs": [{"id": "O1", "t": "架体", "b": [1, 2, 3, 4], "vis": "partial", "s": "底部有空隙"}],
+            "ppl": [{"id": "P1", "b": [5, 6, 7, 8],
+                     "bv": {"head": "complete", "lh": "partial", "rh": "not_visible", "tr": "complete",
+                            "wa": "partial", "lf": "complete", "rf": "complete"},
+                     "hp": {"lg": "not_worn", "rg": "not_applicable"},
+                     "pp": {"helmet": "worn", "gloves": "not_applicable", "vest": "not_applicable",
+                            "harness": "not_applicable"},
+                     "ac": "走动", "sup": "楼板", "el": "GROUND_LEVEL"}],
+            "iss": [{"s": "CLEAR", "i": "未戴安全帽", "cat": "SCAFFOLD_CANTILEVER", "key": "HELMET_NOT_WORN",
+                     "at": "PPE", "ct": "PPE", "oid": ["O1"], "pid": ["P1"], "ppe": "helmet", "bp": ["head"],
+                     "sp": {"sa": "头部", "ro": "架体", "bv": True, "el": "GROUND_LEVEL", "rs": "STATIC",
+                            "pz": "OUTSIDE", "cu": ["头顶裸露", "无帽壳"]},
+                     "cv": {"id": True, "bd": True, "rg": True, "cu": ["头顶裸露", "无帽壳"],
+                            "alt": "远处人员", "ax": True, "sa": "头部", "ra": "架体", "rel": "ADJACENT"},
+                     "t": "人员头部", "pos": "左侧", "e": "人员头部裸露", "vc": ["头顶裸露", "无帽壳"],
+                     "reg": {"c": "JGJ184-2009", "a": "2.0.4"}, "cf": 0.7, "tv": "complete",
+                     "ev": "direct", "cc": "medium", "b": [5, 6, 7, 8]}],
+        }
+        out = expand_compact_result(raw)
+        self.assertEqual(out["scene_type"], "SCAFFOLD_CANTILEVER")
+        self.assertEqual(out["objects"][0]["object_id"], "O1")
+        self.assertEqual(out["objects"][0]["bbox_2d_1000"], [1, 2, 3, 4])
+        self.assertEqual(out["persons"][0]["person_id"], "P1")
+        self.assertEqual(out["persons"][0]["body_visibility"]["left_hand"], "partial")
+        self.assertEqual(out["persons"][0]["hand_ppe_states"]["left_glove"], "not_worn")
+        self.assertEqual(out["persons"][0]["ppe_states"]["reflective_vest"], "not_applicable")
+        issue = out["issues"][0]
+        self.assertEqual(issue["status"], "CLEAR")
+        self.assertEqual(issue["item"], "未戴安全帽")
+        self.assertEqual(issue["object_ids"], ["O1"])
+        self.assertEqual(issue["spatial_relation"]["subject_anchor"], "头部")
+        self.assertEqual(issue["spatial_relation"]["cues"], ["头顶裸露", "无帽壳"])
+        self.assertEqual(issue["claim_validation"]["target_identity_confirmed"], True)
+        self.assertEqual(issue["claim_validation"]["positive_cues"], ["头顶裸露", "无帽壳"])
+        self.assertEqual(issue["regulation"]["standard_code"], "JGJ184-2009")
+        self.assertEqual(issue["bbox_2d_1000"], [5, 6, 7, 8])
+
+    def test_compact_expansion_accepts_long_keys(self) -> None:
+        raw = {"issues": [{"status": "SUSPECTED", "item": "电缆拖地", "bbox_2d_1000": [1, 2, 3, 4],
+                           "regulation": {"standard_code": "JGJ/T 46-2024", "article": "6.2.3"}}]}
+        out = expand_compact_result(raw)
+        self.assertEqual(out["issues"][0]["status"], "SUSPECTED")
+        self.assertEqual(out["issues"][0]["regulation"]["standard_code"], "JGJ/T 46-2024")
+
+    def test_catalog_backfills_standard_name_and_clause_text(self) -> None:
+        candidate = {"standard_code": "JGJ184-2009", "article": "2.0.4", "standard_name": "",
+                     "clause_summary": "", "match_status": "NEEDS_VERIFICATION"}
+        _backfill_regulation_from_catalog(candidate)
+        self.assertEqual(candidate["standard_name"], "建筑施工作业劳动防护用品配备及使用标准")
+        self.assertIn("安全帽", candidate["clause_summary"])
+        self.assertEqual(candidate["match_status"], "MATCHED")
+
+
+class JsonRepairTests(unittest.TestCase):
+    """The model occasionally emits malformed JSON; the pipeline must recover."""
+
+    def test_plain_json_is_untouched(self) -> None:
+        self.assertEqual(extract_json_object('{"a": 1}'), {"a": 1})
+
+    def test_trailing_comma_is_repaired(self) -> None:
+        self.assertEqual(extract_json_object('{"a": 1,}'), {"a": 1})
+
+    def test_inner_unescaped_quote_is_escaped(self) -> None:
+        broken = '{"iss":[{"s":"CLEAR","i":"架体与"楼体"间空隙","b":[1,2,3,4]}]}'
+        out = extract_json_object(broken)
+        self.assertEqual(len(out["iss"]), 1)
+        self.assertEqual(out["iss"][0]["s"], "CLEAR")
+        self.assertIn("楼体", out["iss"][0]["i"])
+
+    def test_truncated_document_is_salvaged(self) -> None:
+        truncated = '{"st":"X","iss":[{"s":"CLEAR","i":"被截断'
+        out = extract_json_object(truncated)
+        self.assertEqual(out["st"], "X")
+        self.assertEqual(len(out["iss"]), 1)
+
+    def test_salvaged_issues_keep_sibling_objects(self) -> None:
+        damaged = (
+            '{"iss":[{"s":"CLEAR","i":"第一条","b":[1,2,3,4]},'
+            '{"s":"SUSPECTED","i":"第二条带\"引号\"","b":[5,6,7,8]}]}'
+        )
+        out = extract_json_object(damaged)
+        self.assertEqual(len(out["iss"]), 2)
+        self.assertEqual(out["iss"][0]["i"], "第一条")
+
+
+class ModelRetryTests(unittest.TestCase):
+    """Transient failures may be retried, but never past the time budget."""
+
+    def _client(self, side_effect):
+        client = AsyncMock()
+        client.__aenter__.return_value = client
+        client.post.side_effect = side_effect
+        return client
+
+    def _ok_response(self):
+        response = SimpleNamespace()
+        response.raise_for_status = Mock()
+        response.json = Mock(return_value={
+            "choices": [{"message": {"content": '{"status":"CLEAR"}'}, "finish_reason": "stop"}]
+        })
+        return response
+
+    def test_dns_failure_is_retried_within_budget(self) -> None:
+        calls = {"n": 0}
+
+        async def post(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise httpx.ConnectError("[Errno 8] nodename nor servname provided")
+            return self._ok_response()
+
+        client = self._client(post)
+        with patch("safety_check.httpx.AsyncClient", return_value=client):
+            content, attempts = call_deepseek({}, "key", "https://example.invalid", timeout_seconds=5.0)
+        self.assertEqual(content, '{"status":"CLEAR"}')
+        self.assertEqual(attempts, 2)
+        self.assertEqual(client.post.await_count, 2)
+
+    def test_budget_exhaustion_is_not_retried(self) -> None:
+        async def slow(*args, **kwargs):
+            await asyncio.sleep(1)
+            return self._ok_response()
+
+        client = self._client(slow)
+        with patch("safety_check.httpx.AsyncClient", return_value=client), \
+                self.assertRaises(httpx.TimeoutException):
+            call_deepseek({}, "key", "https://example.invalid", timeout_seconds=0.05)
+        self.assertEqual(client.post.await_count, 1)
+
+    def test_permanent_client_error_is_not_retried(self) -> None:
+        response = SimpleNamespace()
+        response.status_code = 401
+        response.raise_for_status = Mock(side_effect=httpx.HTTPStatusError(
+            "unauthorized", request=Mock(), response=response))
+        response.json = Mock(return_value={})
+
+        async def post(*args, **kwargs):
+            return response
+
+        client = self._client(post)
+        with patch("safety_check.httpx.AsyncClient", return_value=client), \
+                self.assertRaises(httpx.HTTPStatusError):
+            call_deepseek({}, "key", "https://example.invalid", timeout_seconds=5.0)
+        self.assertEqual(client.post.await_count, 1)
+
+    def test_server_error_is_retried(self) -> None:
+        calls = {"n": 0}
+
+        async def post(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                response = SimpleNamespace()
+                response.status_code = 503
+                response.raise_for_status = Mock(side_effect=httpx.HTTPStatusError(
+                    "unavailable", request=Mock(), response=response))
+                response.json = Mock(return_value={})
+                return response
+            return self._ok_response()
+
+        client = self._client(post)
+        with patch("safety_check.httpx.AsyncClient", return_value=client):
+            _, attempts = call_deepseek({}, "key", "https://example.invalid", timeout_seconds=5.0)
+        self.assertEqual(attempts, 2)
+
+    def test_transient_classification(self) -> None:
+        self.assertFalse(is_transient_model_error(ModelBudgetExhausted("x")))
+        self.assertTrue(is_transient_model_error(httpx.ConnectError("dns")))
+        self.assertTrue(is_transient_model_error(httpx.ReadTimeout("read")))
+        self.assertFalse(is_transient_model_error(ValueError("bad body")))
+        response = SimpleNamespace(status_code=400)
+        error = httpx.HTTPStatusError("bad", request=Mock(), response=response)
+        self.assertFalse(is_transient_model_error(error))
+
+
+class ModelQuotaTests(unittest.TestCase):
+    """A billing rejection must be reported as such, never as a detection failure."""
+
+    def _client(self, status: int, body: str):
+        client = AsyncMock()
+        client.__aenter__.return_value = client
+        response = SimpleNamespace(status_code=status, text=body)
+
+        def raise_for_status():
+            if status >= 400:
+                raise httpx.HTTPStatusError(
+                    f"HTTP {status}", request=Mock(), response=response)
+
+        response.raise_for_status = raise_for_status
+        response.json = Mock(return_value={})
+
+        async def post(*args, **kwargs):
+            return response
+
+        client.post.side_effect = post
+        return client
+
+    def test_payment_required_is_reported_as_quota_error(self) -> None:
+        client = self._client(402, '{"error":{"message":"Insufficient Balance"}}')
+        with patch("safety_check.httpx.AsyncClient", return_value=client), \
+                self.assertRaises(ModelQuotaError):
+            call_deepseek({}, "key", "https://example.invalid", timeout_seconds=5.0)
+        self.assertEqual(client.post.await_count, 1)
+
+    def test_rate_limit_is_reported_as_quota_error(self) -> None:
+        client = self._client(429, '{"error":{"message":"rate limited"}}')
+        with patch("safety_check.httpx.AsyncClient", return_value=client), \
+                self.assertRaises(ModelQuotaError):
+            call_deepseek({}, "key", "https://example.invalid", timeout_seconds=5.0)
+        self.assertEqual(client.post.await_count, 1)
+
+    def test_other_client_errors_keep_their_type(self) -> None:
+        client = self._client(401, '{"error":{"message":"unauthorized"}}')
+        with patch("safety_check.httpx.AsyncClient", return_value=client), \
+                self.assertRaises(httpx.HTTPStatusError):
+            call_deepseek({}, "key", "https://example.invalid", timeout_seconds=5.0)
+        self.assertEqual(client.post.await_count, 1)

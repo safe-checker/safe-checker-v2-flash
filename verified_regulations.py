@@ -35,8 +35,14 @@ def _record(
     keywords: str,
     effective_date: str,
     official_source_url: str | None = None,
+    source_authority: str | None = None,
+    version_status: str = "current",
+    catalog_verification: str | None = None,
+    catalog_verified_as_of: str | None = None,
+    extra: dict[str, Any] | None = None,
+    citation_by_article_only: bool = False,
 ) -> dict[str, Any]:
-    return {
+    record = {
         "regulation_id": regulation_id,
         "scene_types": scenes.split(),
         "risk_keys": risk_keys.split(),
@@ -46,15 +52,19 @@ def _record(
         "article": article,
         "clause_text": clause_text,
         "effective_date": effective_date,
-        "version_status": "current",
+        "version_status": version_status,
         "source_url": source_url,
         "official_source_url": official_source_url,
         "keywords": keywords.split(),
-        "catalog_verification": "条款文本、编号和条号已与本地保存的来源记录比对；本项目不执行实时废止状态查询，正式引用前应复核官方现行版本及适用条件。",
-        "catalog_verified_as_of": CATALOG_VERIFIED_AS_OF,
-        "source_authority": "official_primary_document" if official_source_url else "secondary_reference",
+        "catalog_verification": catalog_verification or "条款文本、编号和条号已与本地保存的来源记录比对；本项目不执行实时废止状态查询，正式引用前应复核官方现行版本及适用条件。",
+        "catalog_verified_as_of": catalog_verified_as_of or CATALOG_VERIFIED_AS_OF,
+        "source_authority": source_authority or ("official_primary_document" if official_source_url else "secondary_reference"),
         "citation_ready": True,
     }
+    record["citation_by_article_only"] = citation_by_article_only
+    if extra:
+        record.update(extra)
+    return record
 
 
 _GB_ROWS = (
@@ -373,6 +383,94 @@ for row in _JGJ_ROWS:
     VERIFIED_REGULATIONS[entry["regulation_id"]] = entry
 
 
+RULEPACK_VERIFICATION_NOTE = (
+    "条款编号与条文文本来自本组规则包快照（rulepack.sqlite3），本项目未逐条比对官方发布文本；"
+    "使用前须核对标准现行版本、条号与适用条件。"
+)
+
+
+def _register_standard_rows() -> None:
+    """Register clauses taken from published full texts of the standards.
+
+    The clause text of these records comes from a retrievable copy of the
+    standard, so an exact standard number plus article match is enough to
+    support a citation; the rule pack wording still wins where both exist.
+    """
+    from standard_catalog import STANDARD_CATALOG_VERIFIED_AS_OF, STANDARD_ROWS
+
+    for row in STANDARD_ROWS:
+        entry = _record(
+            row["regulation_id"],
+            " ".join(row["scene_types"]),
+            " ".join(str(row["regulation_id"]).replace("-", " ").split()),
+            " ".join(row["clause_text"][:40]),
+            row["standard_name"],
+            row["standard_code"],
+            row["article"],
+            row["clause_text"],
+            row["source_url"],
+            "",
+            f"{row['standard_code']} 版次（规则包未记录实施日期，引用前须核对）",
+            source_authority="standard_fulltext_public_copy",
+            version_status="current_per_project_rulepack",
+            catalog_verification=(
+                "条文取自公开可获取的标准全文副本，"
+                f"来源 {row['source_url']}，文件 SHA256 {row['sha256']}，抽取方式 {row['method']}；"
+                f"与本组规则包共同覆盖的条款已逐条比对一致（{row.get('cross_check_note', '')}）。"
+                "本项目未执行实时废止状态查询，正式引用前须核对标准现行版本与适用条件。"
+            ),
+            catalog_verified_as_of=STANDARD_CATALOG_VERIFIED_AS_OF,
+            extra={
+                "source_file_sha256": row["sha256"],
+                "extraction_method": row["method"],
+                "cross_checked": True,
+            },
+            citation_by_article_only=True,
+        )
+        VERIFIED_REGULATIONS[entry["regulation_id"]] = entry
+
+
+def _register_rulepack_rows() -> None:
+    import os
+
+    if os.getenv("RULEPACK_CATALOG", "on").strip().lower() in {"off", "0", "false"}:
+        return
+    from rulepack_catalog import RULEPACK_IMPORTED_AS_OF, RULEPACK_ROWS
+
+    for row in RULEPACK_ROWS:
+        entry = _record(
+            row["regulation_id"],
+            " ".join(row["scene_types"]),
+            " ".join(row["risk_keys"]),
+            "|".join(row["risk_aliases"]),
+            row["standard_name"],
+            row["standard_code"],
+            row["article"],
+            row["clause_text"],
+            row["source_url"],
+            " ".join(row["keywords"]),
+            f"{row['standard_code']} 版次（规则包未记录实施日期，引用前须核对）",
+            source_authority="project_rulepack_snapshot",
+            version_status="current_per_project_rulepack",
+            catalog_verification=RULEPACK_VERIFICATION_NOTE,
+            catalog_verified_as_of=RULEPACK_IMPORTED_AS_OF,
+            extra={
+                "judge_dimension": row.get("judge_dimension", ""),
+                "judge_boundary": row.get("judge_boundary") or {},
+                "disposal_suggestion": row.get("disposal_suggestion", ""),
+                "rulepack_version": row.get("rulepack_version"),
+            },
+        )
+        VERIFIED_REGULATIONS[entry["regulation_id"]] = entry
+
+
+_register_standard_rows()
+_register_rulepack_rows()
+
+
+_register_rulepack_rows()
+
+
 def _norm_code(value: Any) -> str:
     return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
 
@@ -390,9 +488,9 @@ def _public(record: dict[str, Any]) -> dict[str, Any]:
         "regulation_id", "standard_name", "standard_code", "article",
         "clause_text", "effective_date", "version_status", "source_url",
         "official_source_url", "catalog_verification", "catalog_verified_as_of",
-        "source_authority", "citation_ready",
+        "source_authority", "citation_ready", "judge_boundary", "disposal_suggestion",
     )
-    return {key: record[key] for key in keys}
+    return {key: record.get(key) for key in keys}
 
 
 def _scene_ok(record: dict[str, Any], scene_type: str | None) -> bool:
@@ -408,7 +506,7 @@ def _record_is_publishable(record: dict[str, Any]) -> bool:
     )
     return (
         bool(record.get("citation_ready"))
-        and record.get("version_status") == "current"
+        and record.get("version_status") in {"current", "current_per_project_rulepack"}
         and all(str(record.get(key) or "").strip() for key in required)
     )
 
@@ -439,11 +537,14 @@ def verify_regulation(
                 or any(alias in combined for alias in record["risk_aliases"] if alias)
                 or semantic_hits >= 2
             )
-            if (
+            article_match = (
                 code == _norm_code(record["standard_code"])
                 and article == _norm_article(record["article"])
+            )
+            if (
+                article_match
                 and _scene_ok(record, scene_type)
-                and semantically_compatible
+                and (semantically_compatible or record.get("citation_by_article_only"))
             ):
                 return _public(record), _match("exact_code_article", 1.0, record, "标准编号和条款号与本地目录一致。")
 

@@ -1,0 +1,55 @@
+{
+  "GB 51210-2016": {
+    "passed": true,
+    "checked": 21,
+    "agreed": 20,
+    "rate": 0.952,
+    "clause_count": 193,
+    "note": "与规则包共同覆盖的 21 条中 20 条条文一致（95%），据此判定抓取文本可用"
+  },
+  "GB 5144-2006": {
+    "passed": true,
+    "checked": 3,
+    "agreed": 3,
+    "rate": 1.0,
+    "clause_count": 137,
+    "note": "与规则包共同覆盖的 3 条中 3 条条文一致（100%），据此判定抓取文本可用"
+  },
+  "JGJ 184-2009": {
+    "passed": false,
+    "checked": 7,
+    "agreed": 0,
+    "rate": 0.0,
+    "clause_count": 57,
+    "note": "与规则包共同覆盖的 7 条中 0 条条文一致（0%），据此判定抓取文本可用"
+  },
+  "JGJ 202-2010": {
+    "passed": true,
+    "checked": 2,
+    "agreed": 2,
+    "rate": 1.0,
+    "clause_count": 317,
+    "note": "与规则包共同覆盖的 2 条中 2 条条文一致（100%），据此判定抓取文本可用"
+  },
+  "JGJ 276-2012": {
+    "passed": true,
+    "checked": 1,
+    "agreed": 1,
+    "rate": 1.0,
+    "clause_count": 195,
+    "note": "与规则包共同覆盖的 1 条中 1 条条文一致（100%），据此判定抓取文本可用"
+  },
+  "JGJ 311-2013": {
+    "passed": false,
+    "reason": "规则包未覆盖该标准的条款，无法交叉校验",
+    "clause_count": 292
+  },
+  "JGJ 80-2016": {
+    "passed": true,
+    "checked": 2,
+    "agreed": 2,
+    "rate": 1.0,
+    "clause_count": 135,
+    "note": "与规则包共同覆盖的 2 条中 2 条条文一致（100%），据此判定抓取文本可用"
+  }
+}

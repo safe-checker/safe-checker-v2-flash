@@ -11,6 +11,7 @@ import logging
 import os
 import signal
 import subprocess
+import time
 import sys
 import tempfile
 from pathlib import Path
@@ -21,17 +22,78 @@ from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from PIL import Image, UnidentifiedImageError
 
+from safety_check import parse_detail_crop
+
 
 BASE_DIR = Path(__file__).resolve().parent
 CHECK_SCRIPT = BASE_DIR / "safety_check.py"
 load_dotenv(BASE_DIR / ".env")
 
 MAX_UPLOAD_BYTES = int(os.getenv("API_MAX_UPLOAD_BYTES", str(12 * 1024 * 1024)))
-PROCESS_TIMEOUT_SECONDS = float(os.getenv("API_PROCESS_TIMEOUT_SECONDS", "8"))
+# 检测器自己的检测预算；进程硬杀要比它宽松，才能拿到结构化超时错误
+INSPECTION_BUDGET_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "8"))
+PROCESS_TIMEOUT_SECONDS = float(
+    os.getenv("API_PROCESS_TIMEOUT_SECONDS", str(INSPECTION_BUDGET_SECONDS + 1.5))
+)
+# 整体调用允许的最长时间预算；必须够一次完整重试，重试才会真的发生
+TOTAL_TIMEOUT_SECONDS = float(
+    os.getenv("API_TOTAL_TIMEOUT_SECONDS", str(INSPECTION_BUDGET_SECONDS * 2 + 1.5))
+)
+# 瞬时故障（超时、网络错误）时额外重试的次数
+TRANSIENT_RETRIES = max(0, int(os.getenv("API_TRANSIENT_RETRIES", "1")))
+RETRYABLE_ERRORS = {"timeout", "network_error"}
 MAX_CONCURRENT_REQUESTS = max(1, int(os.getenv("API_MAX_CONCURRENT_REQUESTS", "2")))
 ACCESS_TOKEN = os.getenv("API_ACCESS_TOKEN", "").strip()
 REQUEST_SLOTS = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
+
+def _process_failure(completed: subprocess.CompletedProcess[str], result: Any) -> HTTPException:
+    """Map a failed inspection to the HTTP contract the video client expects.
+
+    The detection script writes a structured error to stdout; warnings from
+    Pillow and friends go to stderr and must never hide the real reason.
+    A process killed by a signal is reported by signal name, because a bare
+    exit code does not tell the operator what happened.
+    """
+    error = result.get("error") if isinstance(result, dict) else None
+    if isinstance(error, dict):
+        message = error.get("message")
+        if isinstance(message, str) and message.strip():
+            error_type = error.get("type")
+            logger.warning("Inspection failed: returncode=%s error_type=%s", completed.returncode, error_type)
+            return HTTPException(
+                status_code=504 if error_type == "timeout" else 502,
+                detail=message.strip()[-2000:],
+            )
+    if completed.returncode < 0:
+        number = -completed.returncode
+        try:
+            name = signal.Signals(number).name
+        except ValueError:
+            name = str(number)
+        message = f"Inspection process was terminated by signal {name} ({number}). Check the service and system logs."
+    else:
+        diagnostic = completed.stderr.strip() or completed.stdout.strip() or "No error details were returned."
+        message = f"Inspection process failed (exit code {completed.returncode}): {diagnostic[-1800:]}"
+    logger.warning("Inspection process failed: returncode=%s", completed.returncode)
+    return HTTPException(status_code=502, detail=message)
+
+
+def _failure_type(completed: subprocess.CompletedProcess) -> str:
+    """Return the structured error type of a failed inspection, if any."""
+    if completed.returncode == 0:
+        return ""
+    try:
+        failure = json.loads(completed.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return "unknown"
+    if isinstance(failure, dict) and failure.get("status") == "error":
+        error = failure.get("error")
+        if isinstance(error, dict):
+            return str(error.get("type") or "unknown")
+    return "unknown"
+
 
 app = FastAPI(
     title="Construction Safety Image Inspection API",
@@ -76,10 +138,20 @@ async def inspect_image(
     image: UploadFile = File(..., description="A construction-site image file."),
     scene: str = Form("", description="Optional scene, for example: 起重吊装 or 高处作业."),
     prompt: str = Form("", description="Optional additional inspection instruction."),
+    detail_crop: str = Form(
+        "",
+        description="Optional second image crop: auto or x1,y1,x2,y2 on a 0..1000 grid.",
+    ),
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
 ) -> JSONResponse:
     if ACCESS_TOKEN and not hmac.compare_digest(x_api_key or "", ACCESS_TOKEN):
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key.")
+
+    if detail_crop.strip().lower() != "auto":
+        try:
+            parse_detail_crop(detail_crop, (1000, 1000))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     content = await image.read(MAX_UPLOAD_BYTES + 1)
     if not content:
@@ -126,24 +198,49 @@ async def inspect_image(
                 command.extend(["--scene", scene.strip()])
             if prompt.strip():
                 command.extend(["--prompt", prompt.strip()])
+            if detail_crop.strip():
+                command.extend(["--detail-crop", detail_crop.strip()])
 
-            try:
-                completed = await asyncio.to_thread(
-                    subprocess.run,
-                    command,
-                    cwd=BASE_DIR,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=PROCESS_TIMEOUT_SECONDS,
-                    check=False,
-                )
-            except subprocess.TimeoutExpired:
-                logger.warning("Inspection subprocess exceeded API_PROCESS_TIMEOUT_SECONDS=%s", PROCESS_TIMEOUT_SECONDS)
+            child_env = {
+                **os.environ,
+                "REQUEST_TIMEOUT_SECONDS": str(INSPECTION_BUDGET_SECONDS),
+            }
+            total_deadline = time.monotonic() + TOTAL_TIMEOUT_SECONDS
+            completed = None
+            for attempt in range(TRANSIENT_RETRIES + 1):
+                remaining_total = total_deadline - time.monotonic()
+                if remaining_total <= 0:
+                    break
+                try:
+                    completed = await asyncio.to_thread(
+                        subprocess.run,
+                        command,
+                        cwd=BASE_DIR,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=min(PROCESS_TIMEOUT_SECONDS, remaining_total),
+                        check=False,
+                        env=child_env,
+                    )
+                except subprocess.TimeoutExpired:
+                    logger.warning(
+                        "Inspection subprocess exceeded API_PROCESS_TIMEOUT_SECONDS=%s", PROCESS_TIMEOUT_SECONDS
+                    )
+                    completed = None
+                    break
+                failure_type = _failure_type(completed)
+                if failure_type not in RETRYABLE_ERRORS:
+                    break
+                if attempt >= TRANSIENT_RETRIES:
+                    break
+                if total_deadline - time.monotonic() < INSPECTION_BUDGET_SECONDS:
+                    break
+            if completed is None:
                 raise HTTPException(
                     status_code=504,
-                    detail=f"Inspection exceeded the {PROCESS_TIMEOUT_SECONDS:g}-second API processing limit.",
+                    detail=f"Inspection exceeded the {TOTAL_TIMEOUT_SECONDS:g}-second API processing limit.",
                 )
 
         try:

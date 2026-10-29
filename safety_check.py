@@ -11,12 +11,14 @@ regulation keys, converts bounding boxes, and formats the standard report.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import base64
 import io
 import json
 import math
 import os
 import re
+import socket
 import sys
 import time
 from pathlib import Path
@@ -31,8 +33,17 @@ from scene_rules import (
     normalize_scene,
 )
 from verified_regulations import (
+    VERIFIED_REGULATIONS,
     format_verified_regulation,
     verify_regulation,
+)
+from scene_checklists import (
+    AUTO_CORE_DIMENSIONS,
+    FAMILY_CORE_DIMENSIONS,
+    SCENE_CHECKLISTS,
+    SCENE_FAMILY_CHECKLISTS,
+    SUBJECT_CHECKLIST,
+    SUBJECT_CHECKLIST_LINES,
 )
 
 
@@ -45,14 +56,19 @@ DEFAULT_PROMPT = (
 )
 
 
-def build_single_vision_system_prompt(scene: str | None) -> str:
+def _semantic_prompt_body(scene: str | None) -> str:
     scene_key = normalize_scene(scene)
     profile = get_scene_profile(scene_key)
     current_date = time.strftime("%Y年%m月")
+    checklist_section = build_scene_checklist_section(scene_key)
+    if not checklist_section:
+        checklist_section = ""
     return f"""你是施工现场安全视觉检测模型。根据输入图片独立完成一次全面、快速的安全检查。
 检查场景提示：{profile['label']}。该提示只是待验证线索，不能覆盖图片证据。先根据主体设备、结构、铭牌和用途标识识别实际场景；施工升降机/施工电梯的吊笼、层门、导轨、控制面板及“自动开门、禁止倚靠”等标识不得仅因出现电控柜而归为临时用电。用户未指定场景时按综合施工现场检查。
 
 检查要求：先建立精简的 objects 对象清单，只收录安全判断所需的主体设备、关键部件、作业区域、危险源、防护设施以及被风险引用的对象，最多8个；不要收录与安全判断无关的背景物。再检查个人防护、作业行为、空间关系、临边洞口、高处、临时用电、机械、吊装、脚手架、基坑、消防、材料、通道及隔离警示等风险。只依据图片直接可见证据；不得把阴影、反光、模糊、遮挡或画面裁切推断成违规。未入镜不等于缺失，空间关系须有清楚几何证据。对开/闭、干/湿、有/无、内/外、存在/缺失、占用/相邻等状态，必须确认目标身份、部件归属和边界，给出至少2条相互独立的直接视觉线索，并排除一个最合理的相反解释；否则只能 SUSPECTED 或 NOT_ASSESSABLE。静态图片不能证明资质、票证、检测记录、承载力、功能试验或精确距离。
+
+若用户同时提供全图和局部图，第一张始终是整图，后续局部图只用于补充细节；必须先用整图建立空间关系，再用局部图确认部件状态，不能把局部裁剪边界当作原图边界，也不能因局部图看不全而推断整图中目标缺失。
 
 对象与状态协议：
 1. 配电箱主箱门、内层面板、检修门、插座盖和插口是不同部件。主箱门打开必须同时看见主门门板发生角度位移以及主箱开口/内部空间；箱体侧面、门缝、圆形插口或打开的插座盖不能作为主箱门打开证据。箱门关闭但未上锁，应判“未锁闭”，不得判“箱门未关闭”。
@@ -65,12 +81,15 @@ def build_single_vision_system_prompt(scene: str | None) -> str:
 
 每个风险输出一个紧贴可见违规证据的范围框。坐标基于整张输入图片，采用0到1000归一化整数，原点在左上角，格式为 [x1,y1,x2,y2]，其中x向右、y向下，x1/y1为左上角，x2/y2为右下角。范围框应包住实际违规对象/证据，不要框整张图或无关区域。若一条风险涉及彼此分离的多个位置，拆成多个风险项分别定位。无法从图中可靠定位时 bbox_2d_1000 必须为 null，禁止猜坐标；有可定位证据时必须给有效坐标。
 
+{checklist_section}
 法规要求：当前日期为{current_date}。对每个风险，先依据施工安全规范知识给出最可能的中国现行标准候选，优先使用当前仍有效的最新版本，不要在已知存在新版时引用被替代的旧版。输出规范全称、标准编号、具体条款号和条文要点；不能确认标准真实性、条号或适用条件时将 match_status 写 NEEDS_VERIFICATION，禁止编造法规。法规匹配范围不得局限于临时用电，应覆盖图片实际涉及的高处、吊装、脚手架、基坑、机械、消防和个人防护等场景。程序随后只负责将候选与本地已核验现行条款目录比对；只有目录核验成功的条款才能作为正式引用，模型候选不能单独支撑明确违规；模型仍负责识图和安全判断。
 
 risk_category 使用下列最接近的场景键：GENERAL_SITE、TEMPORARY_ELECTRICITY、WORK_AT_HEIGHT、FOUNDATION_PIT、LIFTING_OPERATIONS、TOWER_CRANE、CONSTRUCTION_HOIST、SCAFFOLD_COUPLER_TYPE、SCAFFOLD_DISC_BUCKLE、SCAFFOLD_CANTILEVER、SCAFFOLD_ATTACHED_LIFTING。risk_key 使用稳定、简短、大写英文下划线编码，表达根本风险，不包含位置和后果，例如 PERSON_UNDER_SUSPENDED_LOAD、CABLE_ON_GROUND；没有合适固定名称时自行给出稳定编码。
 
 状态：CLEAR表示违规状态有直接清晰证据，item和evidence中不得出现“疑似、可能、无法确认、无法判断”等不确定措辞；SUSPECTED表示存在可见线索但仍有不确定性；NOT_ASSESSABLE表示图片不能判断，此时item应描述“某状态无法判断”，不要把未确认事实写成确定违规名称。
-只输出一个合法JSON对象，不输出Markdown、代码围栏或解释。按严重度最多输出3条最重要风险；所有中文描述保持简短，单条 evidence 不超过60字，每个线索数组最多2项，不重复解释。格式：
+"""
+
+_OUTPUT_TAIL_FULL = """只输出一个合法JSON对象，不输出Markdown、代码围栏或解释。按严重度最多输出{MAX_RISK_ITEMS}条最重要风险；所有中文描述保持简短，单条 evidence 不超过60字，每个线索数组最多2项，不重复解释。格式：
 {{
   "scene_type": "根据图片识别的场景键",
   "scene": "场景中文名称",
@@ -137,6 +156,328 @@ risk_category 使用下列最接近的场景键：GENERAL_SITE、TEMPORARY_ELECT
 无风险时 issues 为空数组。"""
 
 
+_OUTPUT_TAIL_COMPACT = """只输出一个合法JSON对象，不输出Markdown、代码围栏或解释。按严重度最多输出{MAX_RISK_ITEMS}条最重要风险。
+使用下面的短键输出，不要展开成完整字段名；中文一律短句：evidence 不超过40字，item 不超过25字，target 不超过12字，position 不超过8字，alt 不超过15字，sp/cv 里的锚点不超过8字，cu/vc 每项不超过10字且最多2项。objs 最多6个，ppl 只列与风险或防护判断相关的人。
+枚举值必须写全称，例如 status 写 CLEAR / SUSPECTED / NOT_ASSESSABLE，vis 写 complete / partial / occluded / not_visible，pp/hp 写 worn / not_worn / improper / uncertain / not_applicable，el 写 GROUND_LEVEL / LOW_OBSTACLE / ELEVATED_WITH_FALL_RISK / UNCERTAIN，rs 写 STATIC / SUSPENDED / MOVING / UNCERTAIN，pz 写 UNDER_LOAD / SWING_PATH / ADJACENT / OUTSIDE / UNCERTAIN，rel 写 OVERLAP / BLOCKING / CONTACT / ADJACENT / SEPARATE / UNCERTAIN，ev 写 direct / partial / occluded / not_visible / ambiguous，cc 写 high / medium / low / unknown。
+reg 只写标准编号与条号两项，不要写标准全称和条文要点，程序用本地已核验目录回填；无法确定条号时写 "a": "NEEDS_VERIFICATION"。
+格式：
+{{
+  "st": "场景键", "sc": "场景中文名", "sconf": 0.0, "sev": ["线索1", "线索2"],
+  "objs": [
+    {{"id": "O1", "t": "主体或部件类型", "b": [100, 100, 300, 800], "vis": "complete", "s": "≤20字可见状态"}}
+  ],
+  "ppl": [
+    {{"id": "P1", "b": [100, 100, 300, 800],
+     "bv": {{"head": "complete", "lh": "partial", "rh": "partial", "tr": "complete", "wa": "partial", "lf": "complete", "rf": "complete"}},
+     "hp": {{"lg": "not_applicable", "rg": "not_applicable"}},
+     "pp": {{"helmet": "worn", "gloves": "not_applicable", "vest": "not_applicable", "harness": "not_applicable"}},
+     "ac": "≤15字动作", "sup": "≤15字支撑面", "el": "GROUND_LEVEL"}}
+  ],
+  "iss": [
+    {{
+      "s": "CLEAR", "i": "≤25字违规项", "cat": "场景键", "key": "UPPER_SNAKE_KEY",
+      "at": "PPE", "ct": "PPE", "oid": ["O1"], "pid": ["P1"], "ppe": "helmet", "bp": ["head"],
+      "sp": {{"sa": "≤8字主体锚点", "ro": "≤8字参照物", "bv": true, "el": "GROUND_LEVEL", "rs": "STATIC", "pz": "OUTSIDE", "cu": ["≤10字", "≤10字"]}},
+      "cv": {{"id": true, "bd": true, "rg": true, "cu": ["≤10字", "≤10字"], "alt": "≤15字相反解释", "ax": true, "sa": "≤8字", "ra": "≤8字", "rel": "ADJACENT"}},
+      "t": "≤12字对象", "pos": "≤8字方位", "e": "≤40字可见证据", "vc": ["≤10字", "≤10字"],
+      "reg": {{"c": "标准编号", "a": "条号"}},
+      "cf": 0.0, "tv": "complete", "ev": "direct", "cc": "medium", "b": [100, 200, 400, 650]
+    }}
+  ]
+}}
+无风险时 iss 为空数组。"""
+
+
+SCENE_LABELS_ZH = {
+    "SCAFFOLD_CANTILEVER": "悬挑式脚手架",
+    "SCAFFOLD_COUPLER_TYPE": "扣件式钢管脚手架",
+    "SCAFFOLD_DISC_BUCKLE": "承插型盘扣式钢管脚手架",
+    "SCAFFOLD_ATTACHED_LIFTING": "附着式升降脚手架",
+    "FOUNDATION_PIT": "基坑工程",
+    "TOWER_CRANE": "塔式起重机",
+    "CONSTRUCTION_HOIST": "施工升降机",
+    "LIFTING_OPERATIONS": "起重吊装",
+    "TEMPORARY_ELECTRICITY": "临时用电/配电箱",
+    "WORK_AT_HEIGHT": "高处作业",
+    "GENERAL_SITE": "施工现场综合",
+    "SCAFFOLD_FAMILY": "脚手架（悬挑式/扣件式/盘扣式/附着升降式）",
+    "LIFTING_FAMILY": "起重与升降设备（塔式起重机/施工升降机/起重吊装）",
+}
+CHECKLIST_USAGE = (
+    "清单是检查范围的提示，不是必须输出的条目：逐项核对后，只输出证据充分、确实成立的风险；"
+    "未发现问题的项目不要写进结果，也不要为凑满清单而报告不成立的风险。"
+    "标注“判定：按…”的行以对应协议原文为准，协议严格于清单；"
+    "清单与前面的对象与状态协议、人物优先检查协议、状态定义同时生效。"
+)
+
+
+_ANCHOR_RE = re.compile(r"(?m)^(- )\[[^\]]{1,20}\] ")
+
+
+# 主体分组：把主体按设备族切开，同一张图可以由多路并发各查一组。
+# 这是主系统"逐条核查"在 8 秒预算下的压缩形态——L4 的 N 次串行核查做不了，
+# 但"按主体切开、并发查"的时间上限等于最慢的一路，不是 N 路之和。
+SUBJECT_GROUP_FAMILIES = [
+    ("脚手架", ("SCAFFOLD",)),
+    ("起重与升降设备", ("LIFTING",)),
+    ("临时用电", ("ELECTRICITY",)),
+    ("基坑·高处·综合", ("PIT", "HEIGHT", "GENERAL")),
+]
+# 人员防护主体归入最后一组，避免每一路都重复报同一件事
+PPE_SUBJECT = "图片中人员"
+
+
+def _render_subject_section(subject_lines: list[str]) -> str:
+    lines = [
+        "本场景主体清单：先在图中逐条确认下列主体是否存在。只核对确实存在的主体的条目，"
+        "主体不存在直接跳过，不得据推测判定未入镜的主体缺失。",
+        "每条格式为「主体[名称] 检查内容｜违规:违规情形」。",
+    ]
+    lines.extend(subject_lines)
+    lines.append(CHECKLIST_USAGE)
+    return "\n".join(lines)
+
+
+def _subject_group_lines() -> list[str] | None:
+    """Return the subject lines of one concurrent branch, or None for all."""
+    raw = os.environ.get("CHECKLIST_SUBJECT_GROUP", "").strip()
+    if not raw:
+        return None
+    try:
+        index_text, total_text = raw.split("/", 1)
+        index = int(index_text)
+        total = int(total_text)
+    except ValueError:
+        return None
+    if total <= 1 or index < 0 or index >= total:
+        return None
+    if total > len(SUBJECT_GROUP_FAMILIES):
+        return None
+    groups = SUBJECT_GROUP_FAMILIES[:total]
+    if total < len(SUBJECT_GROUP_FAMILIES):
+        # 合并尾部，保证每个主体都有归属
+        head = groups[:-1]
+        tail = groups[-1]
+        families = set()
+        for _, fams in groups[total - 1:]:
+            families |= set(fams)
+        groups = head + [(tail[0], tuple(sorted(families)))]
+    wanted = set(groups[index][1])
+    lines = []
+    for group in SUBJECT_CHECKLIST:
+        subject = group["subject"]
+        families = set(group["families"])
+        if subject == PPE_SUBJECT:
+            if index != total - 1:
+                continue
+        elif not (families & wanted):
+            continue
+        for line in SUBJECT_CHECKLIST_LINES:
+            if line.startswith(f"- 主体[{subject}]"):
+                lines.append(line)
+                break
+    return lines
+
+
+def build_scene_checklist_section(scene_key: str) -> str:
+    """Render the inspection checklist for the scene, if one is available.
+
+    A confirmed scene gets its full checklist. When the scene is not known yet
+    the section lists the observable subjects, because the whole checklist of
+    every scene would not fit in the prompt.
+    """
+    return _build_scene_checklist_section(scene_key)
+
+
+def _build_scene_checklist_section(scene_key: str) -> str:
+    # 主体锚点（[主体名] 前缀）默认关闭：94 张配对实测开 81.7%、关 84.0%，方向为负。
+    # 设 CHECKLIST_SUBJECT_ANCHOR=1 可以再打开做对照。
+    anchor_key = "lines_with_anchor" if os.environ.get("CHECKLIST_SUBJECT_ANCHOR", "0").strip() == "1" else "lines"
+    core_key = "core_lines_with_anchor" if anchor_key == "lines_with_anchor" else "core_lines"
+    enabled = {key: data for key, data in SCENE_CHECKLISTS.items() if data.get("enabled")}
+    group_lines = _subject_group_lines()
+    if group_lines is not None:
+        # 并发分支：只给这一组主体。必须优先于场景清单，
+        # 否则每一路拿到的都是同一份完整场景清单，分组等于没做。
+        return _render_subject_section(group_lines)
+    if not enabled:
+        return ""
+    if scene_key and scene_key in enabled:
+        data = enabled[scene_key]
+        label = SCENE_LABELS_ZH.get(scene_key, scene_key)
+        lines = [f"本场景检查清单（{label}，共{data['dimension_count']}项，逐项核对）："]
+        lines.extend(data[anchor_key])
+        lines.append(CHECKLIST_USAGE)
+        return "\n".join(lines)
+    if scene_key in SCENE_FAMILY_CHECKLISTS:
+        # 调用方直接指定了家族：用家族合并清单，子类特有维度带适用条件
+        data = SCENE_FAMILY_CHECKLISTS[scene_key]
+        lines = [
+            f"本场景检查清单（{data['label']}家族，含{'/'.join(data['scene_labels'])}，"
+            f"共{data['dimension_count']}项，逐项核对）：",
+        ]
+        lines.extend(data[anchor_key])
+        lines.append(CHECKLIST_USAGE)
+        return "\n".join(lines)
+    if scene_key and scene_key != "AUTO":
+        # 场景已确定但该场景尚未开放清单：不注入，避免塞入别的场景的清单
+        return ""
+    # 场景未确定。三种给法可以用 CHECKLIST_AUTO_MODE 切换，用来做对照实验。
+    # 默认用主体清单。94 张配对实测：主体清单 72.1% > 场景预览 67.7% > 家族清单 62.9%。
+    mode = os.environ.get("CHECKLIST_AUTO_MODE", "subject").strip().lower() or "subject"
+    if mode == "subject":
+        # 主体清单：主系统 trigger→rule 机制在单次调用里的形态。
+        # 不要求模型先命名场景，而是先在图中找出出现的主体，只核对出现主体对应的条目。
+        group_lines = _subject_group_lines()
+        if group_lines is not None:
+            return _render_subject_section(group_lines)
+        return _render_subject_section(SUBJECT_CHECKLIST_LINES)
+    if mode == "scene":
+        # 旧路径：逐场景给核心维度名称，不给判定边界。
+        names = "、".join(SCENE_LABELS_ZH.get(key, key) for key in sorted(enabled))
+        lines = [
+            "本场景检查清单：图片场景尚未确定，先判断实际场景，再按该场景的清单逐项核对。",
+            f"已开放清单的场景：{names}。",
+        ]
+        for key, data in enabled.items():
+            label = SCENE_LABELS_ZH.get(key, key)
+            preview = [line.split("｜")[0] for line in data[anchor_key][:AUTO_CORE_DIMENSIONS]]
+            lines.append(f"【{label}】核心维度{len(preview)}项（确认属于该场景后按完整清单核对）：")
+            lines.extend(preview)
+        lines.append(CHECKLIST_USAGE)
+        return "\n".join(lines)
+    # 默认：按家族给核心维度。
+    # 模型把子类判错的概率不低，但把家族判对的比例很高，
+    # 所以 AUTO 路径以家族为单位给清单，子类特有维度标注适用条件。
+    lines = [
+        "本场景检查清单：图片场景尚未确定。先判断图片属于下列哪个家族，再按该家族的核心维度逐项核对。",
+        "标注“仅XX适用”的维度在无法确定子类时跳过；只核对与图中实际存在主体相关的维度。",
+    ]
+    for key, data in SCENE_FAMILY_CHECKLISTS.items():
+        core = data[core_key][:FAMILY_CORE_DIMENSIONS] or data[anchor_key][:FAMILY_CORE_DIMENSIONS]
+        lines.append(f"【{data['label']}】（{'/'.join(data['scene_labels'])}）核心维度{len(core)}项：")
+        lines.extend(core)
+    lines.append(CHECKLIST_USAGE)
+    return "\n".join(lines)
+
+
+def max_risk_items() -> int:
+    """How many risk items the model may report.
+
+    Three was the original cap. The 94-image run shows the model fills all
+    three slots with the most prominent defects and drops the subtler one the
+    test set labelled, while 75% of the extra items turn out to be real. The
+    cap is therefore a variable, not a constant.
+    """
+    value = env_int("MAX_RISK_ITEMS", 3)
+    return max(1, min(value, 8))
+
+
+def build_single_vision_system_prompt(scene: str | None, compact: bool = True) -> str:
+    """Semantic rules stay identical in both modes; only the output template differs."""
+    limit = max_risk_items()
+    tail = (_OUTPUT_TAIL_COMPACT if compact else _OUTPUT_TAIL_FULL).replace("{MAX_RISK_ITEMS}", str(limit))
+    return _semantic_prompt_body(scene) + tail
+
+
+
+_COMPACT_TOP_KEYS = {
+    "st": "scene_type", "sc": "scene", "sconf": "scene_confidence", "sev": "scene_evidence",
+    "objs": "objects", "ppl": "persons", "iss": "issues",
+}
+_COMPACT_OBJECT_KEYS = {
+    "id": "object_id", "t": "object_type", "b": "bbox_2d_1000",
+    "vis": "visibility", "s": "observed_state",
+}
+_COMPACT_PERSON_KEYS = {
+    "id": "person_id", "b": "bbox_2d_1000", "bv": "body_visibility", "hp": "hand_ppe_states",
+    "pp": "ppe_states", "ac": "action", "sup": "support_surface", "el": "elevation_state",
+}
+_COMPACT_BODY_KEYS = {
+    "head": "head", "lh": "left_hand", "rh": "right_hand", "tr": "torso",
+    "wa": "waist", "lf": "left_foot", "rf": "right_foot",
+}
+_COMPACT_GLOVE_KEYS = {"lg": "left_glove", "rg": "right_glove"}
+_COMPACT_PPE_KEYS = {"helmet": "helmet", "gloves": "gloves", "vest": "reflective_vest", "harness": "safety_harness"}
+_COMPACT_ISSUE_KEYS = {
+    "s": "status", "i": "item", "cat": "risk_category", "key": "risk_key",
+    "at": "assessment_type", "ct": "claim_type", "oid": "object_ids", "pid": "person_ids",
+    "ppe": "ppe_item", "bp": "focus_body_parts", "sp": "spatial_relation", "cv": "claim_validation",
+    "t": "target", "pos": "position", "e": "evidence", "vc": "visual_cues", "reg": "regulation",
+    "cf": "confidence", "tv": "target_visibility", "ev": "evidence_level", "cc": "citation_confidence",
+    "b": "bbox_2d_1000",
+}
+_COMPACT_SPATIAL_KEYS = {
+    "sa": "subject_anchor", "ro": "reference_object", "ra": "reference_anchor",
+    "bv": "both_anchors_visible", "el": "elevation_state", "rs": "reference_state",
+    "pz": "person_zone", "cu": "cues",
+}
+_COMPACT_VALIDATION_KEYS = {
+    "id": "target_identity_confirmed", "bd": "component_boundary_complete",
+    "rg": "inspection_region_complete", "cu": "positive_cues",
+    "alt": "alternative_explanation", "ax": "alternative_excluded",
+    "sa": "subject_anchor", "ra": "reference_anchor", "rel": "relation",
+}
+_COMPACT_REGULATION_KEYS = {
+    "c": "standard_code", "a": "article", "n": "standard_name",
+    "s": "clause_summary", "r": "match_reason", "st": "match_status",
+}
+
+
+def _compact_rename(value: Any, mapping: dict[str, str]) -> Any:
+    """Rename short keys to canonical names, keeping already-canonical keys."""
+    if not isinstance(value, dict):
+        return value
+    out: dict[str, Any] = {}
+    for key, item in value.items():
+        canonical = mapping.get(key, key)
+        if canonical in out:
+            continue
+        out[canonical] = item
+    return out
+
+
+def expand_compact_result(data: Any) -> dict[str, Any]:
+    """Expand the short-key model output into the canonical internal structure.
+
+    Long canonical keys are accepted as well, so a model that ignores the short
+    key convention still produces a usable report.
+    """
+    if not isinstance(data, dict):
+        return {}
+    result = _compact_rename(data, _COMPACT_TOP_KEYS)
+    objects = result.get("objects")
+    if isinstance(objects, list):
+        result["objects"] = [_compact_rename(o, _COMPACT_OBJECT_KEYS) for o in objects]
+    persons = result.get("persons")
+    if isinstance(persons, list):
+        expanded = []
+        for person in persons:
+            person = _compact_rename(person, _COMPACT_PERSON_KEYS)
+            if isinstance(person.get("body_visibility"), dict):
+                person["body_visibility"] = _compact_rename(person["body_visibility"], _COMPACT_BODY_KEYS)
+            if isinstance(person.get("hand_ppe_states"), dict):
+                person["hand_ppe_states"] = _compact_rename(person["hand_ppe_states"], _COMPACT_GLOVE_KEYS)
+            if isinstance(person.get("ppe_states"), dict):
+                person["ppe_states"] = _compact_rename(person["ppe_states"], _COMPACT_PPE_KEYS)
+            expanded.append(person)
+        result["persons"] = expanded
+    issues = result.get("issues")
+    if isinstance(issues, list):
+        expanded_issues = []
+        for issue in issues:
+            issue = _compact_rename(issue, _COMPACT_ISSUE_KEYS)
+            if isinstance(issue.get("spatial_relation"), dict):
+                issue["spatial_relation"] = _compact_rename(issue["spatial_relation"], _COMPACT_SPATIAL_KEYS)
+            if isinstance(issue.get("claim_validation"), dict):
+                issue["claim_validation"] = _compact_rename(issue["claim_validation"], _COMPACT_VALIDATION_KEYS)
+            if isinstance(issue.get("regulation"), dict):
+                issue["regulation"] = _compact_rename(issue["regulation"], _COMPACT_REGULATION_KEYS)
+            expanded_issues.append(issue)
+        result["issues"] = expanded_issues
+    return result
+
+
 def env_int(name: str, default: int) -> int:
     value = os.getenv(name)
     if not value:
@@ -161,20 +502,24 @@ def env_float(name: str, default: float) -> float:
 def analyze_image_quality(image_path: Path) -> dict[str, Any]:
     with Image.open(image_path) as image:
         image = ImageOps.exif_transpose(image)
-        image = image.convert("RGB")
-        width, height = image.size
-        sample = image.copy()
-        sample.thumbnail((320, 320))
-        gray = sample.convert("L")
-        stat = ImageStat.Stat(gray)
-        brightness = float(stat.mean[0])
-        edge = gray.filter(ImageFilter.FIND_EDGES)
-        edge_stat = ImageStat.Stat(edge)
-        sharpness = float(edge_stat.var[0])
-        pixels = gray.get_flattened_data() if hasattr(gray, "get_flattened_data") else gray.getdata()
-        total = max(1, len(pixels))
-        overexposed_ratio = sum(1 for p in pixels if p >= 245) / total
-        underexposed_ratio = sum(1 for p in pixels if p <= 15) / total
+        return analyze_pil_image_quality(image)
+
+
+def analyze_pil_image_quality(image: Image.Image) -> dict[str, Any]:
+    width, height = image.size
+    sample = image.convert("RGB")
+    sample.thumbnail((320, 320))
+    gray = sample.convert("L")
+    stat = ImageStat.Stat(gray)
+    brightness = float(stat.mean[0])
+    edge = gray.filter(ImageFilter.FIND_EDGES)
+    edge_stat = ImageStat.Stat(edge)
+    sharpness = float(edge_stat.var[0])
+    # Pillow 10 起 getdata 逐步废弃，新版改用 get_flattened_data，两种都兼容
+    pixels = gray.get_flattened_data() if hasattr(gray, "get_flattened_data") else list(gray.getdata())
+    total = max(1, len(pixels))
+    overexposed_ratio = sum(1 for p in pixels if p >= 245) / total
+    underexposed_ratio = sum(1 for p in pixels if p <= 15) / total
 
     clarity = "clear"
     if sharpness < 140:
@@ -206,26 +551,116 @@ def analyze_image_quality(image_path: Path) -> dict[str, Any]:
     }
 
 
+def image_to_data_url(image: Image.Image, max_edge: int, quality: int) -> str:
+    if max_edge < 1 or not 1 <= quality <= 100:
+        raise ValueError("Image max edge must be positive and JPEG quality must be in 1..100.")
+    image = image.convert("RGB")
+    width, height = image.size
+    longest = max(width, height)
+    if longest > max_edge:
+        scale = max_edge / longest
+        image = image.resize(
+            (max(1, int(width * scale)), max(1, int(height * scale))),
+            Image.Resampling.LANCZOS,
+        )
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=quality, optimize=True)
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
+
+
 def prepare_image_data_url(image_path: Path, max_edge: int, quality: int) -> str:
     if not image_path.exists():
         raise FileNotFoundError(f"Image not found: {image_path}")
 
     with Image.open(image_path) as image:
         image = ImageOps.exif_transpose(image)
-        image = image.convert("RGB")
-        width, height = image.size
-        longest = max(width, height)
+        return image_to_data_url(image, max_edge=max_edge, quality=quality)
 
-        if longest > max_edge:
-            scale = max_edge / longest
-            new_size = (max(1, int(width * scale)), max(1, int(height * scale)))
-            image = image.resize(new_size, Image.Resampling.LANCZOS)
 
-        buffer = io.BytesIO()
-        image.save(buffer, format="JPEG", quality=quality, optimize=True)
+def parse_detail_crop(value: str, image_size: tuple[int, int]) -> tuple[int, int, int, int] | None:
+    """Parse an x1,y1,x2,y2 crop on the original-image 0..1000 grid."""
+    if not value or value.strip().lower() in {"off", "none", "关闭"}:
+        return None
+    width, height = image_size
+    if width < 1 or height < 1:
+        raise ValueError("Image dimensions must be positive.")
+    try:
+        values = [float(part.strip()) for part in value.split(",")]
+    except ValueError:
+        raise ValueError("DETAIL_CROP must be auto or x1,y1,x2,y2 on the 0..1000 grid.")
+    if len(values) != 4 or not all(math.isfinite(part) for part in values):
+        raise ValueError("DETAIL_CROP must be auto or x1,y1,x2,y2 on the 0..1000 grid.")
+    if not all(0 <= part <= 1000 for part in values):
+        raise ValueError("DETAIL_CROP coordinates must be within 0..1000.")
+    x1, y1, x2, y2 = values
+    if x2 <= x1 or y2 <= y1:
+        raise ValueError("DETAIL_CROP coordinates must satisfy x2>x1 and y2>y1.")
+    left = max(0, min(width - 1, math.floor(x1 * width / 1000)))
+    top = max(0, min(height - 1, math.floor(y1 * height / 1000)))
+    right = max(left + 1, min(width, math.ceil(x2 * width / 1000)))
+    bottom = max(top + 1, min(height, math.ceil(y2 * height / 1000)))
+    return left, top, right, bottom
 
-    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-    return f"data:image/jpeg;base64,{encoded}"
+
+def select_auto_detail_crop(image_path: Path) -> tuple[int, int, int, int]:
+    """Select one high-detail region without adding a model call.
+
+    This is only a routing heuristic. The model must still verify the crop
+    against the full image, and callers can override it with an explicit box.
+    """
+    with Image.open(image_path) as source:
+        return select_auto_crop_from_image(ImageOps.exif_transpose(source))
+
+
+def select_auto_crop_from_image(image: Image.Image) -> tuple[int, int, int, int]:
+    image = image.convert("L")
+    width, height = image.size
+    crop_width = max(1, int(width * 0.62))
+    crop_height = max(1, int(height * 0.62))
+    sample = image.resize((min(width, 480), min(height, 480)))
+    edge = sample.filter(ImageFilter.FIND_EDGES)
+    candidates: list[tuple[float, tuple[int, int, int, int]]] = []
+    for center_x in (0.25, 0.5, 0.75):
+        for center_y in (0.25, 0.5, 0.75):
+            left = max(0, min(width - crop_width, int(width * center_x - crop_width / 2)))
+            top = max(0, min(height - crop_height, int(height * center_y - crop_height / 2)))
+            right, bottom = left + crop_width, top + crop_height
+            sx1 = int(left * sample.width / width)
+            sy1 = int(top * sample.height / height)
+            sx2 = max(sx1 + 1, int(right * sample.width / width))
+            sy2 = max(sy1 + 1, int(bottom * sample.height / height))
+            score = ImageStat.Stat(edge.crop((sx1, sy1, sx2, sy2))).mean[0]
+            candidates.append((score, (left, top, right, bottom)))
+    return max(candidates, key=lambda item: item[0])[1]
+
+
+def prepare_detail_crop_data_url(
+    image_path: Path,
+    crop_box: tuple[int, int, int, int],
+    max_edge: int,
+    quality: int,
+) -> str:
+    with Image.open(image_path) as source:
+        image = ImageOps.exif_transpose(source).convert("RGB")
+        left, top, right, bottom = crop_box
+        if not (0 <= left < right <= image.width and 0 <= top < bottom <= image.height):
+            raise ValueError("Detail crop must be nonempty and inside the oriented original image.")
+        return image_to_data_url(image.crop(crop_box), max_edge=max_edge, quality=quality)
+
+
+def crop_box_to_1000(
+    crop_box: tuple[int, int, int, int],
+    image_size: tuple[int, int],
+) -> list[int]:
+    width, height = image_size
+    left, top, right, bottom = crop_box
+    return [
+        round(left * 1000 / width),
+        round(top * 1000 / height),
+        round(right * 1000 / width),
+        round(bottom * 1000 / height),
+    ]
 
 
 def original_image_size(image_path: Path) -> tuple[int, int]:
@@ -290,23 +725,51 @@ def build_vision_payload(
     max_tokens: int,
     temperature: float,
     reasoning_effort: str,
+    detail_image_data_url: str | None = None,
+    detail_image_detail: str | None = None,
+    detail_crop_box_1000: list[int] | None = None,
 ) -> dict[str, Any]:
+    user_content: list[dict[str, Any]] = [
+        {"type": "text", "text": user_text},
+        {
+            "type": "image_url",
+            "image_url": {
+                "url": image_data_url,
+                "detail": image_detail,
+            },
+        },
+    ]
+    if detail_image_data_url:
+        crop_hint = (
+            f"局部图对应原图0-1000坐标框：{detail_crop_box_1000}。"
+            if detail_crop_box_1000
+            else "局部图对应原图的一个细节区域。"
+        )
+        user_content.extend(
+            [
+                {
+                    "type": "text",
+                    "text": (
+                        "下面附加一张原图局部细节图，仅用于确认小部件、装备和文字。"
+                        f"{crop_hint}局部图不能替代全图，也不能改变全图中的空间关系；所有对象和违规框坐标仍必须按整张原图输出。"
+                    ),
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": detail_image_data_url,
+                        "detail": detail_image_detail or image_detail,
+                    },
+                },
+            ]
+        )
     payload: dict[str, Any] = {
         "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {
                 "role": "user",
-                "content": [
-                    {"type": "text", "text": user_text},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": image_data_url,
-                            "detail": image_detail,
-                        },
-                    },
-                ],
+                "content": user_content,
             },
         ],
         "temperature": temperature,
@@ -321,22 +784,229 @@ def build_vision_payload(
 
 
 
-def extract_json_object(text: str) -> dict[str, Any]:
+def _strip_code_fence(text: str) -> str:
     cleaned = text.strip()
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
         cleaned = re.sub(r"\s*```$", "", cleaned)
-    try:
-        data = json.loads(cleaned)
-    except json.JSONDecodeError:
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start < 0 or end <= start:
-            raise
-        data = json.loads(cleaned[start : end + 1])
-    if not isinstance(data, dict):
-        raise ValueError("JSON response must be an object.")
-    return data
+    return cleaned
+
+
+def _escape_inner_quotes(text: str) -> str:
+    """Escape quotes that appear inside a string value.
+
+    In valid JSON a string always ends before a structural character, so a
+    quote followed by ordinary text is an inner quote the model left unescaped.
+    """
+    out: list[str] = []
+    index = 0
+    length = len(text)
+    in_string = False
+    while index < length:
+        char = text[index]
+        if not in_string:
+            out.append(char)
+            if char == '"':
+                in_string = True
+            index += 1
+            continue
+        if char == "\\":
+            out.append(text[index : index + 2])
+            index += 2
+            continue
+        if char == '"':
+            look = index + 1
+            while look < length and text[look] in " \t\r\n":
+                look += 1
+            following = text[look] if look < length else ""
+            if following in ",}][:" or following == "":
+                in_string = False
+                out.append(char)
+            else:
+                out.append('\\"')
+            index += 1
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def _repair_json_text(text: str) -> str:
+    """Repair the JSON glitches a vision model occasionally emits."""
+    repaired = text.replace("\u201c", '"').replace("\u201d", '"')
+    repaired = repaired.replace("\uff02", '"').replace("\u2018", "'").replace("\u2019", "'")
+    repaired = _escape_inner_quotes(repaired)
+    repaired = re.sub(r",(\s*[}\]])", r"\1", repaired)
+    return repaired
+
+
+def _trim_trailing_closers(text: str, max_trim: int = 3) -> list[str]:
+    """The model sometimes closes the JSON object one time too many.
+
+    Measured on the 94-image set: a small share of responses end with an extra
+    `}` or `]`. Dropping the surplus closers recovers the report without
+    spending another model call, which the eight second budget cannot afford.
+    """
+    out: list[str] = []
+    for cut in range(1, max_trim + 1):
+        if len(text) <= cut:
+            break
+        tail = text[-cut:]
+        if all(char in "}]" for char in tail):
+            out.append(text[:-cut])
+    return out
+
+
+def _balance_json(text: str) -> str:
+    """Close braces and brackets the model left open."""
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "{[":
+            stack.append(char)
+        elif char in "}]":
+            if stack:
+                stack.pop()
+    if in_string:
+        text += '"'
+    for opener in reversed(stack):
+        text += "}" if opener == "{" else "]"
+    return text
+
+
+def _split_top_level_objects(array_text: str) -> list[str]:
+    """Split an array body into its top level object literals."""
+    chunks: list[str] = []
+    depth = 0
+    in_string = False
+    escaped = False
+    start = 0
+    for index, char in enumerate(array_text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "{[":
+            depth += 1
+        elif char in "}]":
+            depth -= 1
+            if depth == 0:
+                chunks.append(array_text[start : index + 1])
+                start = index + 1
+        elif char == "," and depth == 1:
+            start = index + 1
+    return chunks
+
+
+def _salvage_issues(text: str) -> dict[str, Any]:
+    """Recover individual issue objects from a damaged JSON document."""
+    match = re.search(r'"(?:iss|issues)"\s*:\s*\[', text)
+    if not match:
+        return {}
+    body_start = match.end()
+    depth = 1
+    in_string = False
+    escaped = False
+    body_end = body_start
+    for index in range(body_start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+        elif char in "]}":
+            depth -= 1
+            if depth == 0:
+                body_end = index
+                break
+    body = text[body_start:body_end]
+    recovered: list[Any] = []
+    for chunk in _split_top_level_objects(body):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        for candidate in (chunk, _repair_json_text(chunk), _balance_json(_repair_json_text(chunk))):
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                recovered.append(parsed)
+                break
+    if not recovered:
+        return {}
+    salvaged: dict[str, Any] = {}
+    header = re.search(r'"st"\s*:\s*"([^"]*)"', text)
+    if header:
+        salvaged["scene_type"] = header.group(1)
+    salvaged["issues"] = recovered
+    salvaged["_salvaged"] = True
+    return salvaged
+
+
+def extract_json_object(text: str) -> dict[str, Any]:
+    cleaned = _strip_code_fence(text)
+    candidates = [cleaned]
+    repaired = _repair_json_text(cleaned)
+    if repaired != cleaned:
+        candidates.append(repaired)
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(cleaned[start : end + 1])
+        candidates.append(_repair_json_text(cleaned[start : end + 1]))
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+    trimmed = _trim_trailing_closers(cleaned)
+    for candidate in (repaired, _balance_json(repaired), _balance_json(_repair_json_text(cleaned))):
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+    for candidate in trimmed:
+        for variant in (candidate, _balance_json(candidate)):
+            try:
+                data = json.loads(variant)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, dict):
+                return data
+    salvaged = _salvage_issues(cleaned)
+    if salvaged:
+        return salvaged
+    raise ValueError("model response was not a usable JSON object")
 
 
 def ynu(value: Any) -> str:
@@ -946,6 +1616,37 @@ def normalize_model_regulation(value: Any) -> dict[str, Any]:
     return normalized
 
 
+def _backfill_regulation_from_catalog(candidate: dict[str, Any]) -> None:
+    """Fill standard name and clause text from the local catalog.
+
+    Compact mode asks the model for standard_code and article only; the local
+    catalog is the authority for the name, the clause text and its currency.
+    """
+    code = _catalog_code(candidate.get("standard_code"))
+    article = _catalog_article(candidate.get("article"))
+    if not code or not article:
+        return
+    for record in VERIFIED_REGULATIONS.values():
+        if (
+            _catalog_code(record.get("standard_code")) == code
+            and _catalog_article(record.get("article")) == article
+        ):
+            candidate["standard_name"] = record["standard_name"]
+            candidate["clause_summary"] = record["clause_text"]
+            candidate.setdefault("match_reason", "条款由本地已核验目录回填")
+            if record.get("version_status") == "current_per_project_rulepack":
+                candidate["match_status"] = "MATCHED"
+            return
+
+
+def _catalog_code(value: Any) -> str:
+    return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
+
+
+def _catalog_article(value: Any) -> str:
+    return re.sub(r"[^0-9]", "", str(value or ""))
+
+
 def strict_issue_quality_gate(
     issue: dict[str, Any],
     scene_type: str | None = None,
@@ -992,6 +1693,7 @@ def strict_issue_quality_gate(
         result.get("citation_confidence"), "citation"
     )
     candidate = normalize_model_regulation(result.get("regulation"))
+    _backfill_regulation_from_catalog(candidate)
     verified, regulation_match = verify_regulation(
         candidate=candidate,
         risk_key=result["risk_key"],
@@ -1061,7 +1763,10 @@ def normalize_fact_result(
     original_size: tuple[int, int] | None = None,
 ) -> dict[str, Any]:
     raw_model_scene = str(data.get("scene_type") or data.get("scene") or "").strip()
-    detected_scene = normalize_scene(raw_model_scene or scene_override)
+    model_scene = normalize_scene(raw_model_scene) if raw_model_scene else ""
+    # 调用方给定的场景是提示词与清单的依据（实测模型在有提示时与调用方一致 92/93），
+    # 报告里的场景应以调用方为准，模型自判单独记录，不要覆盖。
+    detected_scene = normalize_scene(scene_override) if scene_override else (model_scene or "AUTO")
     facts = data.get("facts")
     if not isinstance(facts, dict):
         facts = {}
@@ -1079,7 +1784,7 @@ def normalize_fact_result(
     if not isinstance(issues, list):
         issues = []
     normalized_issues: list[dict[str, Any]] = []
-    for issue in issues[:5]:
+    for issue in issues[: max(5, max_risk_items())]:
         if not isinstance(issue, dict):
             continue
         status = str(issue.get("status", "SUSPECTED")).upper()
@@ -1143,6 +1848,8 @@ def normalize_fact_result(
         "scene_type": detected_scene,
         "scene": profile.get("label", "未识别"),
         "scene_hint": scene_override,
+        "model_detected_scene": model_scene or None,
+        "model_scene_confidence": scene_confidence,
         "scene_confidence": scene_confidence,
         "scene_evidence": [
             str(cue).strip()[:100]
@@ -1260,24 +1967,141 @@ def model_judged_report(
     return "\n".join(lines).strip()
 
 
-def call_deepseek(payload: dict[str, Any], api_key: str, base_url: str, timeout_seconds: float) -> str:
+RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504}
+
+
+class ModelBudgetExhausted(httpx.TimeoutException):
+    """The request budget is gone, so another attempt cannot help."""
+
+
+class ModelNetworkError(RuntimeError):
+    """Transient network or upstream failure that survived every allowed attempt."""
+
+
+class ModelQuotaError(RuntimeError):
+    """The provider rejected the call for billing or quota reasons.
+
+    This is not a detection failure and must not be recorded as one: the caller
+    has to top up and try again, otherwise the image would be lost.
+    """
+
+
+def is_transient_model_error(exc: BaseException) -> bool:
+    """Whether the failure is worth another attempt with the leftover budget.
+
+    DNS failures, refused connections, dropped sockets and overloaded upstreams
+    are transient. A malformed request, a bad key or a refused body is not.
+    """
+    if isinstance(exc, ModelBudgetExhausted):
+        return False
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in RETRYABLE_STATUS
+    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadError,
+                        httpx.WriteError, httpx.RemoteProtocolError, httpx.PoolTimeout,
+                        httpx.TimeoutException)):
+        return True
+    if isinstance(exc, (socket.gaierror, ConnectionError)):
+        return True
+    return False
+
+
+def call_deepseek(
+    payload: dict[str, Any],
+    api_key: str,
+    base_url: str,
+    timeout_seconds: float,
+    max_attempts: int | None = None,
+    retry_min_budget: float | None = None,
+) -> tuple[str, int]:
+    """Send the request, retrying transient failures inside the time budget.
+
+    The budget is shared by all attempts. A failure that consumed the whole
+    budget (a slow upstream) is never retried, while a failure that returned
+    early (a DNS lookup that never reached the server) leaves enough budget for
+    another attempt.
+    """
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    timeout = httpx.Timeout(timeout_seconds, connect=min(3.0, timeout_seconds))
+    if max_attempts is None:
+        max_attempts = env_int("MODEL_MAX_ATTEMPTS", 3)
+    if retry_min_budget is None:
+        retry_min_budget = env_float("MODEL_RETRY_MIN_BUDGET", 1.0)
+    max_attempts = max(1, int(max_attempts))
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
 
-    with httpx.Client(timeout=timeout) as client:
-        response = client.post(base_url, headers=headers, json=payload)
-        response.raise_for_status()
-        data = response.json()
+    connect_cap = env_float("MODEL_CONNECT_TIMEOUT", 2.0)
+
+    async def request(budget: float) -> dict[str, Any]:
+        # 连接阶段失败（DNS 解析、拒绝连接）要尽快暴露，才有机会用剩余预算重试
+        timeout = httpx.Timeout(budget, connect=max(0.3, min(connect_cap, budget)))
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(base_url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+
+    async def request_with_deadline(budget: float) -> dict[str, Any]:
+        # httpx phase timeouts alone do not cap connect + upload + response time.
+        try:
+            return await asyncio.wait_for(request(budget), timeout=budget)
+        except asyncio.TimeoutError as exc:
+            raise ModelBudgetExhausted("DeepSeek request exhausted its total time budget.") from exc
+
+    attempts = 0
+    last_error: BaseException | None = None
+    while True:
+        attempts += 1
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ModelBudgetExhausted("DeepSeek request exhausted its total time budget.") from last_error
+        try:
+            data = asyncio.run(request_with_deadline(remaining))
+            break
+        except ModelBudgetExhausted:
+            raise
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status in {402, 429}:
+                raise ModelQuotaError(
+                    f"DeepSeek rejected the request with HTTP {status}: "
+                    f"{exc.response.text[:160]}"
+                ) from exc
+            if not is_transient_model_error(exc):
+                raise
+            last_error = exc
+            leftover = deadline - time.monotonic()
+            if attempts >= max_attempts or leftover < retry_min_budget:
+                raise ModelNetworkError(
+                    f"DeepSeek request failed with a transient error after {attempts} attempt(s): "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            time.sleep(min(0.2 * attempts, max(0.0, leftover - retry_min_budget)))
+        except Exception as exc:  # noqa: BLE001 - classified right below
+            last_error = exc
+            if not is_transient_model_error(exc):
+                raise
+            leftover = deadline - time.monotonic()
+            if attempts >= max_attempts or leftover < retry_min_budget:
+                if isinstance(exc, httpx.TimeoutException) and not isinstance(
+                    exc, (httpx.ConnectTimeout, httpx.PoolTimeout)
+                ):
+                    # 读超时：预算已经用完，不是网络层问题
+                    raise ModelBudgetExhausted(
+                        "DeepSeek request exhausted its total time budget."
+                    ) from exc
+                raise ModelNetworkError(
+                    f"DeepSeek request failed with a transient error after {attempts} attempt(s): "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            time.sleep(min(0.2 * attempts, max(0.0, leftover - retry_min_budget)))
 
     try:
         choice = data["choices"][0]
         message = choice["message"]
         content = message.get("content")
         if isinstance(content, str) and content.strip():
-            return content.strip()
+            return content.strip(), attempts
 
         finish_reason = choice.get("finish_reason", "unknown")
         if message.get("reasoning_content"):
@@ -1335,6 +2159,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-save", action="store_true", help="Print only, do not save result file.")
     parser.add_argument("--dry-run", action="store_true", help="Validate image preprocessing and config without calling the API.")
     parser.add_argument("--show-timing", action="store_true", help="Print preprocessing, model, parsing, coordinate conversion, and report timing.")
+    parser.add_argument(
+        "--detail-crop",
+        default="",
+        help=(
+            "Optional second image in the same model call: 'auto' or "
+            "x1,y1,x2,y2 on the original-image 0..1000 grid. "
+            "Leave empty/off to use the full image only."
+        ),
+    )
     parser.set_defaults(json_output=True)
     parser.add_argument(
         "--json-output",
@@ -1382,6 +2215,15 @@ def main() -> int:
     max_edge = env_int("MAX_IMAGE_EDGE", 768)
     jpeg_quality = env_int("JPEG_QUALITY", 70)
     image_detail = os.getenv("IMAGE_DETAIL", "low").strip()
+    high_detail_min_edge = env_int("IMAGE_DETAIL_HIGH_MIN_EDGE", 1600)
+    # 局部图可以用更高的 detail：全图走低分辨率保证全局，局部走高分辨率保证细节
+    detail_image_detail = os.getenv("DETAIL_CROP_IMAGE_DETAIL", "").strip() or None
+    detail_crop_setting = (
+        args.detail_crop.strip()
+        or os.getenv("DETAIL_CROP", "off").strip()
+        or "off"
+    )
+    detail_crop_max_edge = env_int("DETAIL_CROP_MAX_EDGE", max_edge)
     max_tokens = env_int("SINGLE_MODEL_MAX_TOKENS", env_int("MAX_TOKENS", 2200))
     temperature = env_float("TEMPERATURE", 0.0)
     reasoning_effort = os.getenv("REASONING_EFFORT", "none").strip().lower()
@@ -1395,11 +2237,34 @@ def main() -> int:
 
     started = time.perf_counter()
     try:
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("REQUEST_TIMEOUT_SECONDS must be finite and positive.")
         preprocess_started = time.perf_counter()
-        image_size = original_image_size(image_path)
-        local_quality = analyze_image_quality(image_path)
-        image_data_url = prepare_image_data_url(image_path, max_edge=max_edge, quality=jpeg_quality)
-        system_prompt = build_single_vision_system_prompt(requested_scene)
+        with Image.open(image_path) as source:
+            image = ImageOps.exif_transpose(source).convert("RGB")
+            image_size = image.size
+            local_quality = analyze_pil_image_quality(image)
+            image_data_url = image_to_data_url(image, max_edge=max_edge, quality=jpeg_quality)
+            detail_crop_box = (
+                select_auto_crop_from_image(image)
+                if detail_crop_setting.lower() == "auto"
+                else parse_detail_crop(detail_crop_setting, image_size)
+            )
+            detail_image_data_url = (
+                image_to_data_url(
+                    image.crop(detail_crop_box), max_edge=detail_crop_max_edge, quality=jpeg_quality,
+                )
+                if detail_crop_box is not None
+                else None
+            )
+        detail_crop_box_1000 = (
+            crop_box_to_1000(detail_crop_box, image_size)
+            if detail_crop_box is not None
+            else None
+        )
+        output_mode = os.getenv("OUTPUT_MODE", "compact").strip().lower()
+        compact_output = output_mode != "full"
+        system_prompt = build_single_vision_system_prompt(requested_scene, compact=compact_output)
         user_parts = []
         if scene_override:
             user_parts.append(f"用户指定场景：{scene_override}")
@@ -1411,6 +2276,11 @@ def main() -> int:
                 "坐标必须按整张原图归一化到0-1000后输出，禁止按压缩输入图的像素坐标输出。",
             ]
         )
+        if image_detail == "adaptive":
+            # 只有源图大到确实会丢细节时才用高细节瓦片；
+            # 服务端对小图用 low 和 high 的图片 token 完全相同，high 是空操作。
+            image_detail = "high" if max(image_size) > high_detail_min_edge else "low"
+
         payload = build_vision_payload(
             image_data_url=image_data_url,
             system_prompt=system_prompt,
@@ -1420,6 +2290,9 @@ def main() -> int:
             max_tokens=max_tokens,
             temperature=temperature,
             reasoning_effort=reasoning_effort,
+            detail_image_data_url=detail_image_data_url,
+            detail_image_detail=detail_image_detail,
+            detail_crop_box_1000=detail_crop_box_1000,
         )
         preprocess_elapsed = time.perf_counter() - preprocess_started
         if args.dry_run:
@@ -1428,6 +2301,22 @@ def main() -> int:
                 "format_version": "1.3",
                 "model": model,
                 "vision_calls": 1,
+                "image_inputs": 2 if detail_image_data_url else 1,
+                "input_strategy": "full_plus_detail_crop" if detail_image_data_url else "full_image_only",
+                "detail_crop": {
+                    "mode": detail_crop_setting if detail_image_data_url else "off",
+                    "bbox_2d_1000": detail_crop_box_1000,
+                    "bbox_original_px": (
+                        {
+                            "x": detail_crop_box[0],
+                            "y": detail_crop_box[1],
+                            "width": detail_crop_box[2] - detail_crop_box[0],
+                            "height": detail_crop_box[3] - detail_crop_box[1],
+                        }
+                        if detail_crop_box is not None
+                        else None
+                    ),
+                },
                 "scene": get_scene_profile(requested_scene)["label"],
                 "image": {
                     "path": str(image_path),
@@ -1449,6 +2338,9 @@ def main() -> int:
                 print(f"image={image_path}")
                 print(f"model={model}")
                 print("vision_calls=1")
+                print(f"image_inputs={dry_result['image_inputs']}")
+                print(f"input_strategy={dry_result['input_strategy']}")
+                print(f"detail_crop_1000={detail_crop_box_1000}")
                 print(f"scene={dry_result['scene']}")
                 print(f"original_image_size={image_size[0]}x{image_size[1]}")
                 print(f"max_image_edge={max_edge}")
@@ -1467,9 +2359,14 @@ def main() -> int:
             "DEEPSEEK_VISION_TIMEOUT_SECONDS",
             max(1.0, timeout_seconds - 0.55),
         )
-        model_timeout = min(model_timeout, max(1.0, timeout_seconds - preprocess_elapsed - 0.35))
+        remaining = timeout_seconds - (time.perf_counter() - started) - 0.35
+        if remaining <= 0:
+            raise httpx.TimeoutException("Image preprocessing exhausted the detection time budget.")
+        if not math.isfinite(model_timeout) or model_timeout <= 0:
+            raise ValueError("DEEPSEEK_VISION_TIMEOUT_SECONDS must be finite and positive.")
+        model_timeout = min(model_timeout, remaining)
         call_started = time.perf_counter()
-        raw = call_deepseek(
+        raw, model_attempts = call_deepseek(
             payload,
             api_key=api_key,
             base_url=base_url,
@@ -1478,12 +2375,22 @@ def main() -> int:
         model_elapsed = time.perf_counter() - call_started
 
         parse_started = time.perf_counter()
+        try:
+            parsed = extract_json_object(raw)
+        except ValueError as exc:
+            # 留一段原始响应，偶发解析失败时才能定位，而不是只看到一个异常类型
+            raise ValueError(
+                f"{exc} | 原始响应尾部: {raw[-240:]!r}"
+            ) from exc
+        if compact_output:
+            parsed = expand_compact_result(parsed)
         detected = normalize_fact_result(
-            extract_json_object(raw),
+            parsed,
             scene_override=scene_override,
             original_size=image_size,
         )
         detected["image_quality"] = local_quality
+        detected["image_detail"] = image_detail
         detected["image_width"] = image_size[0]
         detected["image_height"] = image_size[1]
         parse_elapsed = time.perf_counter() - parse_started
@@ -1500,6 +2407,7 @@ def main() -> int:
         report_elapsed = time.perf_counter() - report_started
         timings = {
             "preprocess": round(preprocess_elapsed, 4),
+            "model_attempts": model_attempts,
             "deepseek_vision": round(model_elapsed, 4),
             "parse_normalize": round(parse_elapsed, 4),
             "report_format": round(report_elapsed, 4),
@@ -1508,7 +2416,7 @@ def main() -> int:
         if args.show_timing:
             report += "\n\n时间分配：\n"
             report += f"- 图片预处理与请求构造：{timings['preprocess']:.3f} 秒\n"
-            report += f"- DeepSeek Flash 单次图片检测：{timings['deepseek_vision']:.3f} 秒\n"
+            report += f"- DeepSeek Flash 单次图片检测：{timings['deepseek_vision']:.3f} 秒（尝试 {timings['model_attempts']} 次）\n"
             report += f"- JSON解析、法规核验与坐标换算：{timings['parse_normalize']:.3f} 秒\n"
             report += f"- 报告格式化：{timings['report_format']:.3f} 秒\n"
             report += f"- 总耗时：{timings['total']:.3f} 秒"
@@ -1517,6 +2425,22 @@ def main() -> int:
             args,
             "timeout",
             f"DeepSeek Flash request exceeded the time budget ({timeout_seconds:.1f}s total).",
+            time.perf_counter() - started,
+        )
+        return 1
+    except ModelQuotaError as exc:
+        emit_cli_error(
+            args,
+            "insufficient_balance",
+            str(exc),
+            time.perf_counter() - started,
+        )
+        return 1
+    except ModelNetworkError as exc:
+        emit_cli_error(
+            args,
+            "network_error",
+            str(exc),
             time.perf_counter() - started,
         )
         return 1
@@ -1544,13 +2468,40 @@ def main() -> int:
         warnings.append(
             f"{unverified_count}条风险未匹配到本地已核验现行条款，法规引用需人工复核。"
         )
+    model_scene = detected.get("model_detected_scene")
+    if model_scene and detected.get("scene_type") and model_scene != detected.get("scene_type"):
+        warnings.append(
+            f"模型自判场景({model_scene})与传入场景({detected.get('scene_type')})不一致，"
+            "本次检查按传入场景的清单执行，请核对场景标注是否正确。"
+        )
     response = {
         "status": "success",
         "format_version": "1.3",
         "output_format": "structured_json",
         "model": model,
+        "vision_calls": 1,
+        "image_inputs": 2 if detail_image_data_url else 1,
+        "input_strategy": "full_plus_detail_crop" if detail_image_data_url else "full_image_only",
+        "detail_crop": {
+            "mode": detail_crop_setting if detail_image_data_url else "off",
+            "bbox_2d_1000": detail_crop_box_1000,
+            "bbox_original_px": (
+                {
+                    "x": detail_crop_box[0],
+                    "y": detail_crop_box[1],
+                    "width": detail_crop_box[2] - detail_crop_box[0],
+                    "height": detail_crop_box[3] - detail_crop_box[1],
+                }
+                if detail_crop_box is not None
+                else None
+            ),
+        },
         "scene": detected.get("scene"),
         "scene_type": detected.get("scene_type"),
+        "model_detected_scene": detected.get("model_detected_scene"),
+        "model_scene_confidence": detected.get("model_scene_confidence"),
+        "image_detail": image_detail,
+        "detail_crop_image_detail": detail_image_detail,
         "scene_hint": detected.get("scene_hint"),
         "scene_confidence": detected.get("scene_confidence"),
         "scene_evidence": detected.get("scene_evidence", []),
