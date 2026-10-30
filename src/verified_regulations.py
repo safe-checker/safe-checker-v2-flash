@@ -396,7 +396,7 @@ def _register_standard_rows() -> None:
     standard, so an exact standard number plus article match is enough to
     support a citation; the rule pack wording still wins where both exist.
     """
-    from standard_catalog import STANDARD_CATALOG_VERIFIED_AS_OF, STANDARD_ROWS
+    from catalogs.standard_catalog import STANDARD_CATALOG_VERIFIED_AS_OF, STANDARD_ROWS
 
     for row in STANDARD_ROWS:
         entry = _record(
@@ -447,7 +447,7 @@ def _register_main_system_rows() -> None:
 
     if os.getenv("MAIN_SYSTEM_CATALOG", "on").strip().lower() in {"off", "0", "false"}:
         return
-    source = _Path(__file__).resolve().parent / "resources" / "main_system_rules.json"
+    source = _Path(__file__).resolve().parent.parent / "data" / "main_system" / "rules.json"
     if not source.exists():
         return
     payload = json.loads(source.read_text(encoding="utf-8"))
@@ -503,7 +503,7 @@ def _register_rulepack_rows() -> None:
 
     if os.getenv("RULEPACK_CATALOG", "on").strip().lower() in {"off", "0", "false"}:
         return
-    from rulepack_catalog import RULEPACK_IMPORTED_AS_OF, RULEPACK_ROWS
+    from catalogs.rulepack_catalog import RULEPACK_IMPORTED_AS_OF, RULEPACK_ROWS
 
     for row in RULEPACK_ROWS:
         entry = _record(

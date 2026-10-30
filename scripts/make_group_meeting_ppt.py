@@ -20,7 +20,7 @@ from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx.util import Inches, Pt
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 WORKSPACE = ROOT.parent
 TEMPLATE = Path("/Users/gjz/Downloads/复旦ppt模板/复旦大学ppt模板2.pptx")
 OUT_DIR = ROOT / "outputs"

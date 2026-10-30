@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BASE / "src"))
 sys.path.insert(0, str(BASE))
 
 from dotenv import load_dotenv
@@ -157,18 +158,18 @@ async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--standard", default="", help="Only this standard code, e.g. 'GB 51210-2016'.")
     parser.add_argument("--limit", type=int, default=0, help="Only the first N clauses.")
-    parser.add_argument("--out", default=str(BASE / "resources" / "generated_rules_raw.json"))
+    parser.add_argument("--out", default=str(BASE / "data" / "generated" / "rules_raw.json"))
     parser.add_argument("--concurrency", type=int, default=12)
     parser.add_argument("--model", default=os.getenv("DEEPSEEK_MODEL", "deepseek-flash"))
     parser.add_argument("--timeout", type=float, default=60.0)
     args = parser.parse_args()
 
     # 读清洗后的条款：异体字已归一、条文说明已剔除
-    cleaned_path = BASE / "resources" / "standards" / "cleaned_clauses.json"
+    cleaned_path = BASE / "data" / "standards" / "cleaned_clauses.json"
     if cleaned_path.exists():
         rows = list(json.loads(cleaned_path.read_text(encoding="utf-8")))
     else:
-        from standard_catalog import STANDARD_ROWS
+        from catalogs.standard_catalog import STANDARD_ROWS
         rows = list(STANDARD_ROWS)
     if args.standard:
         rows = [r for r in rows if r.get("standard_code") == args.standard]

@@ -14,11 +14,12 @@ import sys
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
-OUT = BASE / "resources" / "standards"
-TARGET = BASE / "standard_catalog.py"
+OUT = BASE / "data" / "standards"
+TARGET = BASE / "src" / "catalogs" / "standard_catalog.py"
+sys.path.insert(0, str(BASE / "src"))
 sys.path.insert(0, str(BASE))
 
-from rulepack_catalog import RULEPACK_ROWS  # noqa: E402
+from catalogs.rulepack_catalog import RULEPACK_ROWS  # noqa: E402
 
 CODE_KEY = lambda s: re.sub(r"[^A-Z0-9]", "", str(s or "").upper())  # noqa: E731
 ART_KEY = lambda s: re.sub(r"[^0-9]", "", str(s or ""))  # noqa: E731

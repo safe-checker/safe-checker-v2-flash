@@ -1,3 +1,7 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import asyncio
 import base64
 import io
@@ -6,7 +10,6 @@ import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -1100,7 +1103,7 @@ class SceneFamilyChecklistTests(unittest.TestCase):
     """The merged family checklist and the subject anchors it carries."""
 
     def test_family_checklist_merges_every_scaffold_subtype(self) -> None:
-        from scene_checklists import SCENE_CHECKLISTS, SCENE_FAMILY_CHECKLISTS
+        from catalogs.scene_checklists import SCENE_CHECKLISTS, SCENE_FAMILY_CHECKLISTS
 
         family = SCENE_FAMILY_CHECKLISTS["SCAFFOLD_FAMILY"]
         single = SCENE_CHECKLISTS["SCAFFOLD_COUPLER_TYPE"]
@@ -1117,7 +1120,7 @@ class SceneFamilyChecklistTests(unittest.TestCase):
             self.assertTrue(any(word in line for word in ("悬挑式", "扣件式", "盘扣式", "附着升降式")))
 
     def test_family_core_skips_dimensions_the_person_protocol_already_covers(self) -> None:
-        from scene_checklists import GLOBAL_DIMENSIONS, SCENE_FAMILY_CHECKLISTS
+        from catalogs.scene_checklists import GLOBAL_DIMENSIONS, SCENE_FAMILY_CHECKLISTS
 
         for data in SCENE_FAMILY_CHECKLISTS.values():
             for line in data["core_lines"]:
@@ -1128,7 +1131,7 @@ class SceneFamilyChecklistTests(unittest.TestCase):
         """94 张配对实测：锚点开 81.7%、关 84.0%，方向为负，所以默认关闭。"""
         import os
 
-        from scene_checklists import SCENE_CHECKLISTS
+        from catalogs.scene_checklists import SCENE_CHECKLISTS
 
         lines = SCENE_CHECKLISTS["TOWER_CRANE"]["lines"]
         self.assertFalse([line for line in lines if line.startswith("- [")])
@@ -1175,8 +1178,8 @@ class SceneFamilyChecklistTests(unittest.TestCase):
         self.assertNotIn("【扣件式钢管脚手架】", section)
 
     def test_subject_checklist_covers_every_rule_with_a_subject(self) -> None:
-        from scene_checklists import SUBJECT_CHECKLIST, SUBJECT_CHECKLIST_LINES
-        from rulepack_catalog import RULEPACK_ROWS
+        from catalogs.scene_checklists import SUBJECT_CHECKLIST, SUBJECT_CHECKLIST_LINES
+        from catalogs.rulepack_catalog import RULEPACK_ROWS
 
         self.assertEqual(len(SUBJECT_CHECKLIST), len(SUBJECT_CHECKLIST_LINES))
         # 规则包里的每一条规则都要能挂到一个主体上
@@ -1225,7 +1228,7 @@ class SceneFamilyChecklistTests(unittest.TestCase):
             self.assertTrue(item["reason"])
 
     def test_scene_subject_index_covers_every_scene(self) -> None:
-        from scene_checklists import SCENE_SUBJECTS
+        from catalogs.scene_checklists import SCENE_SUBJECTS
 
         for scene, subjects in SCENE_SUBJECTS.items():
             self.assertTrue(subjects, f"{scene} 没有绑定主体")
@@ -1243,7 +1246,7 @@ class SceneFamilyChecklistTests(unittest.TestCase):
             self.skipTest("还没有导入主系统规则")
         payload = json.loads(source.read_text(encoding="utf-8"))
         self.assertGreater(payload["subject_count"], 300)
-        from scene_checklists import SUBJECT_CHECKLIST
+        from catalogs.scene_checklists import SUBJECT_CHECKLIST
 
         names = {group["subject"] for group in SUBJECT_CHECKLIST}
         for subject in payload["subjects"][:40]:

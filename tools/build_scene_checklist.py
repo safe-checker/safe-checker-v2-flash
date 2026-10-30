@@ -20,10 +20,11 @@ import sys
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BASE / "src"))
 sys.path.insert(0, str(BASE))
-from rulepack_catalog import RULEPACK_ROWS  # noqa: E402
+from catalogs.rulepack_catalog import RULEPACK_ROWS  # noqa: E402
 
-TARGET = BASE / "scene_checklists.py"
+TARGET = BASE / "src" / "catalogs" / "scene_checklists.py"
 
 # 全部场景铺开。规则包覆盖的每个场景都注入对应清单。
 ENABLED_SCENES = [
@@ -93,12 +94,13 @@ FAMILY_CORE_DIMENSIONS = 5
 
 # 出现在所有场景的通用劳保维度。人物优先检查协议已经逐部位覆盖，
 # 清单里再列一遍只会挤掉能区分场景的维度。
-GLOBAL_DIMENSIONS = {
+# 顺序固定：写成 set 会在生成文件里留下随进程变化的顺序，仓库每次重生成都有 diff
+GLOBAL_DIMENSIONS = (
     "图片中所有人员是否佩戴安全帽",
     "图片中所有人员双脚是否穿工作鞋",
     "图片中所有人员是否穿工作服",
     "图片中所有人员是否佩戴安全带",
-}
+)
 
 SCENE_SHORT_LABELS = {
     "SCAFFOLD_CANTILEVER": "悬挑式",
@@ -412,7 +414,7 @@ def build_subjects() -> list[dict]:
     return subjects
 
 
-GENERATED_RULES_PATH = BASE / "resources" / "generated_rules.json"
+GENERATED_RULES_PATH = BASE / "data" / "generated" / "rules.json"
 # 场景键 -> 设备族
 SCENE_HINT_FAMILY = {
     "SCAFFOLD_CANTILEVER": "SCAFFOLD", "SCAFFOLD_COUPLER_TYPE": "SCAFFOLD",
@@ -423,6 +425,17 @@ SCENE_HINT_FAMILY = {
     "TEMPORARY_ELECTRICITY": "ELECTRICITY", "FOUNDATION_PIT": "PIT",
     "WORK_AT_HEIGHT": "HEIGHT", "GENERAL_SITE": "GENERAL",
 }
+
+
+def stable_id(name: str) -> str:
+    """A trigger id that does not change between runs.
+
+    Python randomises string hashing per process, so hash() would give every
+    rebuild a different id and the repository would show a diff each time.
+    """
+    import hashlib
+
+    return hashlib.md5(name.encode("utf-8")).hexdigest()[:8].upper()
 
 
 def _generated_subjects() -> list[dict]:
@@ -445,7 +458,7 @@ def _generated_subjects() -> list[dict]:
         if not name:
             continue
         entry = grouped.setdefault(name, {
-            "trigger_id": f"GEN-{abs(hash(name)) % 10**8:08d}",
+            "trigger_id": f"GEN-{stable_id(name)}",
             "subject": name,
             "trigger_name": name,
             "cues": [],
@@ -482,7 +495,7 @@ def _generated_subjects() -> list[dict]:
     return out
 
 
-MAIN_SYSTEM_RULES_PATH = BASE / "resources" / "main_system_rules.json"
+MAIN_SYSTEM_RULES_PATH = BASE / "data" / "main_system" / "rules.json"
 # 主系统规则包的场景提示 -> 我们的场景键
 MAIN_SCENE_KEY = {
     "施工用电": "TEMPORARY_ELECTRICITY", "临时用电": "TEMPORARY_ELECTRICITY",
@@ -539,7 +552,7 @@ def merge_main_system_into_subjects(subjects: list[dict]) -> list[dict]:
         if group is None:
             scene_key = MAIN_SCENE_KEY.get(str(rules[0]["scenes"][0]), "GENERAL_SITE")
             group = {
-                "trigger_id": f"MS-{abs(hash(name)) % 10**8:08d}",
+                "trigger_id": f"MS-{stable_id(name)}",
                 "subject": name,
                 "trigger_name": name,
                 "cues": [],
@@ -622,7 +635,7 @@ def main() -> int:
         "",
         "SCENE_SHORT_LABELS = " + repr(SCENE_SHORT_LABELS),
         "",
-        "GLOBAL_DIMENSIONS = " + repr(GLOBAL_DIMENSIONS),
+        "GLOBAL_DIMENSIONS = " + repr(tuple(GLOBAL_DIMENSIONS)),
         "",
         "SUBJECT_ANCHOR_ENABLED = " + repr(SUBJECT_ANCHOR_ENABLED),
         "",

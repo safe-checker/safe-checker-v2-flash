@@ -5,7 +5,7 @@
       "name": "DeepSeek Flash 安全检测",
       "type": "python",
       "request": "launch",
-      "program": "${workspaceFolder}/safety_check.py",
+      "program": "${workspaceFolder}/src/safety_check.py",
       "console": "integratedTerminal",
       "args": [
         "${input:imagePath}",
@@ -17,7 +17,7 @@
       "name": "Dry Run 检查配置",
       "type": "python",
       "request": "launch",
-      "program": "${workspaceFolder}/safety_check.py",
+      "program": "${workspaceFolder}/src/safety_check.py",
       "console": "integratedTerminal",
       "args": [
         "${input:imagePath}",

@@ -23,9 +23,10 @@ import sys
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BASE / "src"))
 sys.path.insert(0, str(BASE))
 
-from scene_checklists import SUBJECT_CHECKLIST
+from catalogs.scene_checklists import SUBJECT_CHECKLIST
 
 # 边界里出现这些词就说明判定不干脆
 LOOSE = re.compile(r"疑似|可能|一般情况|通常|适当|宜|必要时|视情况|原则上|大多|多数情况")
@@ -90,14 +91,14 @@ def bind_subject(hint: str, dimension: str, index) -> tuple[str, float]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--in", dest="src", default=str(BASE / "resources" / "generated_rules_raw.json"))
-    parser.add_argument("--out", default=str(BASE / "resources" / "generated_rules.json"))
-    parser.add_argument("--report", default=str(BASE / "resources" / "generated_rules_report.json"))
+    parser.add_argument("--in", dest="src", default=str(BASE / "data" / "generated" / "rules_raw.json"))
+    parser.add_argument("--out", default=str(BASE / "data" / "generated" / "rules.json"))
+    parser.add_argument("--report", default=str(BASE / "data" / "generated" / "report.json"))
     args = parser.parse_args()
 
     raw = json.loads(Path(args.src).read_text(encoding="utf-8"))
     clauses = {row["regulation_id"]: row for row in
-               json.loads((BASE / "resources" / "standards" / "cleaned_clauses.json").read_text(encoding="utf-8"))}
+               json.loads((BASE / "data" / "standards" / "cleaned_clauses.json").read_text(encoding="utf-8"))}
     index = subject_index()
 
     accepted, rejected = [], []

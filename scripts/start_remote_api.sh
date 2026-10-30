@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$BASE_DIR"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_DIR"
 
 if [[ ! -x ".venv/bin/python" ]]; then
   echo "未找到项目虚拟环境，请先执行：python3 -m venv .venv && .venv/bin/pip install -r requirements.txt" >&2
@@ -49,7 +49,7 @@ cleanup() {
 trap cleanup INT TERM EXIT
 
 echo "启动本机检测 API：http://${API_HOST}:${API_PORT}"
-API_HOST="$API_HOST" API_PORT="$API_PORT" .venv/bin/python api_server.py &
+API_HOST="$API_HOST" API_PORT="$API_PORT" .venv/bin/python src/api_server.py &
 API_PID=$!
 
 for _ in {1..50}; do

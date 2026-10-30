@@ -22,12 +22,17 @@ from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from PIL import Image, UnidentifiedImageError
 
-from safety_check import parse_detail_crop
-
-
+# 仓库根目录（.env 在那里），代码目录（safety_check.py 在这里）
 BASE_DIR = Path(__file__).resolve().parent
+REPO_DIR = BASE_DIR.parent
 CHECK_SCRIPT = BASE_DIR / "safety_check.py"
-load_dotenv(BASE_DIR / ".env")
+
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
+from safety_check import parse_detail_crop  # noqa: E402
+
+load_dotenv(REPO_DIR / ".env")
 
 MAX_UPLOAD_BYTES = int(os.getenv("API_MAX_UPLOAD_BYTES", str(12 * 1024 * 1024)))
 # 检测器自己的检测预算；进程硬杀要比它宽松，才能拿到结构化超时错误

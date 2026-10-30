@@ -17,10 +17,16 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from safety_check import original_image_size, parse_detail_crop
+# 代码在 src/，仓库根目录放 .env 与 outputs/
+REPO_DIR = Path(__file__).resolve().parent.parent
+SRC_DIR = REPO_DIR / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from safety_check import original_image_size, parse_detail_crop  # noqa: E402
 
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = REPO_DIR
 
 
 def summarize_runs(records: list[dict[str, Any]], budget: float) -> dict[str, Any]:

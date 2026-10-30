@@ -14,9 +14,10 @@ import sys
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BASE / "src"))
 sys.path.insert(0, str(BASE))
 
-from scene_checklists import SUBJECT_CHECKLIST
+from catalogs.scene_checklists import SUBJECT_CHECKLIST
 
 STOP = set("的了和与或及其之在有应不应须必须当对从为按照根据进行情况时地等上下前后内外")
 
@@ -55,7 +56,7 @@ def score_rule(rule: dict, subject: dict) -> float:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--pool", default=str(BASE / "resources" / "generated_rules.json"))
+    parser.add_argument("--pool", default=str(BASE / "data" / "generated" / "rules.json"))
     parser.add_argument("--subjects", default="", help="Comma separated subject names.")
     parser.add_argument("--top", type=int, default=6, help="Rules per subject.")
     parser.add_argument("--max-chars", type=int, default=4000)

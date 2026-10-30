@@ -7,10 +7,11 @@ import sys
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BASE / "src"))
 sys.path.insert(0, str(BASE))
 
-SOURCE = BASE / "resources" / "generated_rules.json"
-TARGET = BASE / "generated_rules.py"
+SOURCE = BASE / "data" / "generated" / "rules.json"
+TARGET = BASE / "src" / "catalogs" / "generated_rules.py"
 
 SCENE_OF_FAMILY = {
     "SCAFFOLD": "SCAFFOLD_FAMILY",
@@ -26,7 +27,7 @@ def main() -> int:
     if not SOURCE.exists():
         print(f"没有 {SOURCE}，先跑 validate_generated_rules.py", file=sys.stderr)
         return 1
-    from scene_checklists import SUBJECT_CHECKLIST
+    from catalogs.scene_checklists import SUBJECT_CHECKLIST
 
     families_of = {group["subject"]: (group.get("families") or ["GENERAL"])[0]
                     for group in SUBJECT_CHECKLIST}

@@ -23,6 +23,7 @@ import sys
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BASE / "src"))
 sys.path.insert(0, str(BASE))
 
 # 确定性的异体字与全角归一。只收语义等价、不会改变含义的替换。
@@ -97,11 +98,11 @@ def is_explanatory(text: str) -> tuple[bool, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out", default=str(BASE / "resources" / "standards" / "cleaned_clauses.json"))
-    parser.add_argument("--report", default=str(BASE / "resources" / "standards" / "clean_report.json"))
+    parser.add_argument("--out", default=str(BASE / "data" / "standards" / "cleaned_clauses.json"))
+    parser.add_argument("--report", default=str(BASE / "data" / "standards" / "clean_report.json"))
     args = parser.parse_args()
 
-    from standard_catalog import STANDARD_ROWS
+    from catalogs.standard_catalog import STANDARD_ROWS
 
     kept, dropped = [], []
     touched = 0

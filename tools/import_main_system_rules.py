@@ -19,7 +19,7 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 MAIN = Path("/Users/gjz/Downloads/safe-checker-v2-main 2/src/backend/resources/rules/generated")
-OUT = BASE / "resources" / "main_system_rules.json"
+OUT = BASE / "data" / "main_system" / "rules.json"
 
 # 主系统规则包文件 -> 我们用的场景键
 SCENE_OF_PACK = {

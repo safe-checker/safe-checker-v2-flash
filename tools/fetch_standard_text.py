@@ -21,7 +21,7 @@ import urllib.request
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
-OUT = BASE / "resources" / "standards"
+OUT = BASE / "data" / "standards"
 OUT.mkdir(parents=True, exist_ok=True)
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "

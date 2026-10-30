@@ -2,7 +2,7 @@
 
 当前版本使用 DeepSeek Flash 对施工现场图片进行单次视觉安全检测。模型负责识图、违规判断并提出法规候选；Python 随后用本地已核验现行法规目录校验候选，输出模型候选、最终核验条款、匹配方法以及每条风险在原图上的范围框坐标。法规目录不参与图片识别，也不取代大模型的安全判断。
 
-`make_group_meeting_ppt.py` 仅是旧五模型方案的历史 PPT 生成材料，不被检测脚本或 HTTP API 导入执行，也不代表当前系统架构。
+`scripts/make_group_meeting_ppt.py` 仅是旧五模型方案的历史 PPT 生成材料，不被检测脚本或 HTTP API 导入执行，也不代表当前系统架构。
 
 坐标由模型按整图 0–1000 归一化网格估计，程序换算为原图像素的左上角 `x,y` 与 `width,height`。视觉模型定位是近似结果，无法可靠定位时返回 `null`，不得将估计框当作测量级边界。
 
@@ -19,6 +19,42 @@
 - 承插型盘扣式钢管脚手架
 - 悬挑式脚手架
 - 附着式升降脚手架
+
+## 0. 仓库结构
+
+按"职责"分目录，每个目录只放一类东西：
+
+```
+safe-checker-v2-flash/
+├── src/                     运行时代码（手写，不自动生成）
+│   ├── safety_check.py        检测主程序，也是命令行入口
+│   ├── api_server.py          HTTP 接口，视频处理端调用它
+│   ├── scene_rules.py         场景档案、场景归一化、别名
+│   ├── verified_regulations.py 已核验法规目录的装配与匹配
+│   └── catalogs/              自动生成的目录（由 tools/ 重建，勿手改）
+│       ├── rulepack_catalog.py    规则包的 63 条规则
+│       ├── scene_checklists.py    场景 / 家族 / 主体三套检查清单
+│       ├── standard_catalog.py    已抓取标准的 977 条条款
+│       └── generated_rules.py     由标准条款反向生成的规则
+│
+├── data/                    规则与法规数据（只读输入）
+│   ├── rulepack/              规则包快照
+│   ├── main_system/           主系统导出的 1036 条规则与 335 个主体
+│   ├── standards/            21 部标准的全文与清洗结果
+│   └── generated/            反向生成规则的原始产出、中间产出与报告
+│
+├── tools/                   生成与维护脚本（改数据后跑这里的脚本）
+├── tests/                   离线测试（97 项，不调用模型）
+├── scripts/                 辅助脚本：远程部署、图像输入对比、组会 PPT
+├── docs/                    流程说明、实验记录、提示词分段指纹
+└── outputs/                 每次检测生成的报告（不入库）
+```
+
+三条约定：
+
+1. **`src/catalogs/` 里的文件都是生成的**，改规则要改 `data/` 或 `tools/`，然后重跑对应脚本；
+2. **`data/` 是输入，`tools/` 改数据，`src/` 只读它们**，三者不互相依赖；
+3. **生成必须可复现**——同样的输入重跑一次，产出的文件逐字节相同。
 
 ## 1. 环境要求
 
@@ -70,31 +106,31 @@ DEEPSEEK_MODEL=deepseek-flash
 先用 dry-run 验证图片和配置，不会调用 API：
 
 ```bash
-python safety_check.py "/图片/绝对路径.jpg" --scene "起重吊装" --dry-run
+python src/safety_check.py "/图片/绝对路径.jpg" --scene "起重吊装" --dry-run
 ```
 
 普通运行（默认输出并保存标准 JSON）：
 
 ```bash
-python safety_check.py "/图片/绝对路径.jpg"
+python src/safety_check.py "/图片/绝对路径.jpg"
 ```
 
 如果已知场景，建议加上 `--scene`，这样更快、更准：
 
 ```bash
-python safety_check.py "/图片/绝对路径.jpg" --scene "起重吊装"
+python src/safety_check.py "/图片/绝对路径.jpg" --scene "起重吊装"
 ```
 
 常见场景示例：
 
 ```bash
-python safety_check.py "/图片/绝对路径.jpg" --scene "施工现场临时用电"
-python safety_check.py "/图片/绝对路径.jpg" --scene "高处作业"
-python safety_check.py "/图片/绝对路径.jpg" --scene "基坑工程"
-python safety_check.py "/图片/绝对路径.jpg" --scene "吊装作业"
-python safety_check.py "/图片/绝对路径.jpg" --scene "塔吊"
-python safety_check.py "/图片/绝对路径.jpg" --scene "施工升降机"
-python safety_check.py "/图片/绝对路径.jpg" --scene "脚手架"
+python src/safety_check.py "/图片/绝对路径.jpg" --scene "施工现场临时用电"
+python src/safety_check.py "/图片/绝对路径.jpg" --scene "高处作业"
+python src/safety_check.py "/图片/绝对路径.jpg" --scene "基坑工程"
+python src/safety_check.py "/图片/绝对路径.jpg" --scene "吊装作业"
+python src/safety_check.py "/图片/绝对路径.jpg" --scene "塔吊"
+python src/safety_check.py "/图片/绝对路径.jpg" --scene "施工升降机"
+python src/safety_check.py "/图片/绝对路径.jpg" --scene "脚手架"
 ```
 
 ### 4.0 紧凑输出模式（八秒内完成率的关键）
@@ -155,7 +191,7 @@ python safety_check.py "/图片/绝对路径.jpg" --scene "脚手架"
 
 ### 4.0.2 场景检查清单
 
-`tools/build_scene_checklist.py` 从规则包生成按场景组织的检查清单，写入 `scene_checklists.py`。
+`tools/build_scene_checklist.py` 从规则包生成按场景组织的检查清单，写入 `src/catalogs/scene_checklists.py`。
 规则包里同一条规则在不同场景重复出现（如劳保类规则），生成时按 `judge_dimension` 去重，
 每个检查维度渲染成一行，附带违规／合规／存疑三态边界。
 
@@ -253,7 +289,7 @@ python safety_check.py "/图片/绝对路径.jpg" --scene "脚手架"
   JGJ311-2013、JGJ80-2016、JGJ184-2009、JGJ/T 231-2021、DG/TJ08-2002-2006、GB 10055—2007、
   GB/T34023-2017、GB/T5031-2019）。
 
-规则包条目由 `tools/build_rulepack_catalog.py` 从 `resources/rulepack_snapshot.json` 生成，
+规则包条目由 `tools/build_rulepack_catalog.py` 从 `data/rulepack/rulepack_snapshot.json` 生成，
 来源标记为 `project_rulepack_snapshot`，与官方文件严格区分，引用前仍需核对现行版本。
 
 第三部分 `standard_catalog.py` 是从公开可获取的标准全文副本中抽取的条款，由
@@ -272,7 +308,7 @@ python safety_check.py "/图片/绝对路径.jpg" --scene "脚手架"
 | 标准公开全文 | 977 | `standard_fulltext_public_copy` |
 
 `tools/download_standards.py` 可重复运行；标准全文抓取结果与交叉校验结论见
-`resources/standards/cross_check.json`。
+`data/standards/cross_check.json`。
 
 ### 4.1 可选的全图与局部图实验
 
@@ -282,13 +318,13 @@ python safety_check.py "/图片/绝对路径.jpg" --scene "脚手架"
 
 ```bash
 # 单张全图基线
-python safety_check.py "/图片/绝对路径.jpg" --detail-crop off
+python src/safety_check.py "/图片/绝对路径.jpg" --detail-crop off
 
 # 自动选择一块纹理较丰富的区域，附加一张局部图
-python safety_check.py "/图片/绝对路径.jpg" --detail-crop auto
+python src/safety_check.py "/图片/绝对路径.jpg" --detail-crop auto
 
 # 指定局部框：原图归一化到 0–1000 的 x1,y1,x2,y2，非像素及非宽高
-python safety_check.py "/图片/绝对路径.jpg" --detail-crop "140,180,790,930"
+python src/safety_check.py "/图片/绝对路径.jpg" --detail-crop "140,180,790,930"
 ```
 
 手工坐标必须在 `0..1000` 内，且右下角大于左上角；坐标系采用 EXIF 方向校正后的整图。裁剪从原始清晰图像中生成，全图与局部图分别缩放；模型输出的风险框仍以**整张原图**为参照，`issues[].bbox_original_px` 继续返回原图 `x,y,width,height`。程序不会猜测模型是否误用了局部图坐标，定位仍需验证。
@@ -309,7 +345,7 @@ DETAIL_CROP_MAX_EDGE=768
 先验证本地流程，不调用 API：
 
 ```bash
-python compare_image_inputs.py "/Users/gjz/Pictures/检测2.png" \
+python scripts/compare_image_inputs.py "/Users/gjz/Pictures/检测2.png" \
   --scene "施工现场临时用电" --detail-crop "140,180,790,930" \
   --repeats 1 --dry-run
 ```
@@ -317,7 +353,7 @@ python compare_image_inputs.py "/Users/gjz/Pictures/检测2.png" \
 真实对照默认每组 3 次，共 6 次模型请求，逐次交错运行，无自动重试：
 
 ```bash
-python compare_image_inputs.py "/Users/gjz/Pictures/检测2.png" \
+python scripts/compare_image_inputs.py "/Users/gjz/Pictures/检测2.png" \
   --scene "施工现场临时用电" --detail-crop "140,180,790,930" \
   --repeats 3 --budget 8
 ```
@@ -515,7 +551,7 @@ code "/Users/gjz/Documents/ChatGPT/复杂环境安全巡检/deepseek_flash_safet
 
 ## 11. 视频处理端 HTTP API
 
-项目提供 `api_server.py` HTTP API，视频处理端可上传图片并获取 DeepSeek Flash 单次检测结果及原图坐标框。视频端不需要、也不应传递模型厂商的 API Key。
+项目提供 `src/api_server.py` HTTP API，视频处理端可上传图片并获取 DeepSeek Flash 单次检测结果及原图坐标框。视频端不需要、也不应传递模型厂商的 API Key。
 
 安装依赖并启动服务：
 
@@ -523,7 +559,7 @@ code "/Users/gjz/Documents/ChatGPT/复杂环境安全巡检/deepseek_flash_safet
 cd "/Users/gjz/Documents/ChatGPT/复杂环境安全巡检/deepseek_flash_safety_checker"
 source .venv/bin/activate
 pip install -r requirements.txt
-python api_server.py
+python src/api_server.py
 ```
 
 默认监听 `127.0.0.1:8002`，接口文档在 `http://127.0.0.1:8002/docs`。
@@ -678,7 +714,7 @@ API_PROCESS_TIMEOUT_SECONDS=35
 离线验证错误响应及图像质量兼容性：
 
 ```bash
-python -m unittest -v test_api_server_offline test_safety_check_offline
+python -m unittest discover -s tests -v
 ```
 
 ### 视频端 Python 调用示例
@@ -726,8 +762,8 @@ CLOUDFLARE_TUNNEL_MODE=quick
 
 ```bash
 cd "/Users/gjz/Documents/ChatGPT/复杂环境安全巡检/deepseek_flash_safety_checker"
-chmod +x start_remote_api.sh
-./start_remote_api.sh
+chmod +x scripts/start_remote_api.sh
+./scripts/start_remote_api.sh
 ```
 
 终端会输出一个类似下面的 HTTPS 地址：

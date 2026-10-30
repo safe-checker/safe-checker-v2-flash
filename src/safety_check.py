@@ -38,11 +38,11 @@ from verified_regulations import (
     verify_regulation,
 )
 try:  # 生成规则是可选扩展，索引文件缺失时照常运行
-    from generated_rules import GENERATED_BY_SCENE, GENERATED_BY_SUBJECT
+    from catalogs.generated_rules import GENERATED_BY_SCENE, GENERATED_BY_SUBJECT
 except ImportError:  # pragma: no cover
     GENERATED_BY_SCENE, GENERATED_BY_SUBJECT = {}, {}
 
-from scene_checklists import (
+from catalogs.scene_checklists import (
     AUTO_CORE_DIMENSIONS,
     FAMILY_CORE_DIMENSIONS,
     SCENE_CHECKLISTS,

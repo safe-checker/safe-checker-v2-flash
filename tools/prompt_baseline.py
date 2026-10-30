@@ -13,11 +13,12 @@ import sys
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BASE / "src"))
 sys.path.insert(0, str(BASE))
 import safety_check as sc  # noqa: E402
 import scene_checklists  # noqa: E402
 
-OUT = BASE / "prompt_baseline.json"
+OUT = BASE / "docs" / "prompt_baseline.json"
 
 # 各条线只能在自己负责的块内追加内容
 BLOCK_OWNERS = {
