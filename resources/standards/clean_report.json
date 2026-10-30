@@ -1,0 +1,170 @@
+{
+ "source": "standard_catalog.STANDARD_ROWS",
+ "total": 977,
+ "kept": 954,
+ "dropped_explanatory": 23,
+ "text_modified": 170,
+ "dropped_detail": [
+  {
+   "regulation_id": "STD-GB-51210-2016-2-1-10",
+   "standard_code": "GB 51210-2016",
+   "article": "第2.1.10条",
+   "reason": "长度1063",
+   "chars": 1063
+  },
+  {
+   "regulation_id": "STD-GB-51210-2016-2-1-11",
+   "standard_code": "GB 51210-2016",
+   "article": "第2.1.11条",
+   "reason": "长度990",
+   "chars": 990
+  },
+  {
+   "regulation_id": "STD-GB-51210-2016-3-2-3",
+   "standard_code": "GB 51210-2016",
+   "article": "第3.2.3条",
+   "reason": "长度5208、目录行",
+   "chars": 5208
+  },
+  {
+   "regulation_id": "STD-GB-51210-2016-5",
+   "standard_code": "GB 51210-2016",
+   "article": "第5条",
+   "reason": "目录行",
+   "chars": 42
+  },
+  {
+   "regulation_id": "STD-GB-51210-2016-6-1-11",
+   "standard_code": "GB 51210-2016",
+   "article": "第6.1.11条",
+   "reason": "叙述语气、长度7151、目录行",
+   "chars": 7151
+  },
+  {
+   "regulation_id": "STD-GB-51210-2016-7",
+   "standard_code": "GB 51210-2016",
+   "article": "第7条",
+   "reason": "目录行",
+   "chars": 135
+  },
+  {
+   "regulation_id": "STD-GB-51210-2016-7-2-4",
+   "standard_code": "GB 51210-2016",
+   "article": "第7.2.4条",
+   "reason": "长度875、目录行",
+   "chars": 875
+  },
+  {
+   "regulation_id": "STD-GB-51210-2016-8-2-3",
+   "standard_code": "GB 51210-2016",
+   "article": "第8.2.3条",
+   "reason": "叙述语气、长度2410",
+   "chars": 2410
+  },
+  {
+   "regulation_id": "STD-GB-51210-2016-10-0-1",
+   "standard_code": "GB 51210-2016",
+   "article": "第10.0.1条",
+   "reason": "叙述语气、长度3897",
+   "chars": 3897
+  },
+  {
+   "regulation_id": "STD-GB-51210-2016-11-2-10",
+   "standard_code": "GB 51210-2016",
+   "article": "第11.2.10条",
+   "reason": "长度2396",
+   "chars": 2396
+  },
+  {
+   "regulation_id": "STD-GB-51210-2016-20",
+   "standard_code": "GB 51210-2016",
+   "article": "第20条",
+   "reason": "长度1655、目录行",
+   "chars": 1655
+  },
+  {
+   "regulation_id": "STD-GB-51210-2016-26",
+   "standard_code": "GB 51210-2016",
+   "article": "第26条",
+   "reason": "叙述语气、长度947、目录行",
+   "chars": 947
+  },
+  {
+   "regulation_id": "STD-GB-5144-2006-10-8",
+   "standard_code": "GB 5144-2006",
+   "article": "第10.8条",
+   "reason": "长度1113",
+   "chars": 1113
+  },
+  {
+   "regulation_id": "STD-JGJ-202-2010-2-2",
+   "standard_code": "JGJ 202-2010",
+   "article": "第2.2条",
+   "reason": "长度895",
+   "chars": 895
+  },
+  {
+   "regulation_id": "STD-JGJ-202-2010-4-1-2",
+   "standard_code": "JGJ 202-2010",
+   "article": "第4.1.2条",
+   "reason": "目录行",
+   "chars": 512
+  },
+  {
+   "regulation_id": "STD-JGJ-202-2010-23",
+   "standard_code": "JGJ 202-2010",
+   "article": "第23条",
+   "reason": "目录行",
+   "chars": 316
+  },
+  {
+   "regulation_id": "STD-JGJ-276-2012-8-2-5",
+   "standard_code": "JGJ 276-2012",
+   "article": "第8.2.5条",
+   "reason": "长度5976、目录行",
+   "chars": 5976
+  },
+  {
+   "regulation_id": "STD-JGJ-80-2016-4-1-4",
+   "standard_code": "JGJ 80-2016",
+   "article": "第4.1.4条",
+   "reason": "长度2179",
+   "chars": 2179
+  },
+  {
+   "regulation_id": "STD-JGJ-80-2016-6-2",
+   "standard_code": "JGJ 80-2016",
+   "article": "第6.2条",
+   "reason": "叙述语气、长度2112",
+   "chars": 2112
+  },
+  {
+   "regulation_id": "STD-JGJ-80-2016-9",
+   "standard_code": "JGJ 80-2016",
+   "article": "第9条",
+   "reason": "叙述语气、长度1990",
+   "chars": 1990
+  },
+  {
+   "regulation_id": "STD-JGJ-80-2016-11",
+   "standard_code": "JGJ 80-2016",
+   "article": "第11条",
+   "reason": "长度1111",
+   "chars": 1111
+  },
+  {
+   "regulation_id": "STD-JGJ-80-2016-25",
+   "standard_code": "JGJ 80-2016",
+   "article": "第25条",
+   "reason": "叙述语气",
+   "chars": 576
+  },
+  {
+   "regulation_id": "STD-JGJ-80-2016-84",
+   "standard_code": "JGJ 80-2016",
+   "article": "第84条",
+   "reason": "叙述语气",
+   "chars": 183
+  }
+ ]
+}

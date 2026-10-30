@@ -1,0 +1,186 @@
+{
+ "input_clauses": 181,
+ "generated_rules": 74,
+ "accepted": 50,
+ "rejected": 24,
+ "reject_reasons": {
+  "align": 20,
+  "loose": 0,
+  "subject": 2,
+  "family": 2,
+  "shape": 0
+ },
+ "accepted_by_standard": {
+  "GB 51210-2016": 50
+ },
+ "rejected_detail": [
+  {
+   "atomic_rule_id": "GB51210-2016-3.1.4@connection_firmness",
+   "regulation_id": "STD-GB-51210-2016-3-1-4",
+   "article": "第3.1.4条",
+   "reason": "align",
+   "judge_dimension": "判断脚手架杆件连接节点（扣件、盘扣插销、承插、螺栓等）是否处于可见的紧固、到位状态；不判断连接件的材质性能、扭矩数值和隐蔽部位内部状态。"
+  },
+  {
+   "atomic_rule_id": "GB51210-2016-3.1.4@structure_reasonableness",
+   "regulation_id": "STD-GB-51210-2016-3-1-4",
+   "article": "第3.1.4条",
+   "reason": "align",
+   "judge_dimension": "判断脚手架可见构造是否合理，包括立杆、横杆、剪刀撑、连墙件等构件的设置位置与整体几何形态是否明显异常；不判断承载力验算和设计计算。"
+  },
+  {
+   "atomic_rule_id": "GB51210-2016-4.0.1@steel_pipe_appearance",
+   "regulation_id": "STD-GB-51210-2016-4-0-1",
+   "article": "第4.0.1条",
+   "reason": "align",
+   "judge_dimension": "判断脚手架钢管的外观形态与管端状态，不判断钢管材质牌号、外径壁厚实测值及力学性能。"
+  },
+  {
+   "atomic_rule_id": "GB51210-2016-4.0.2@steel_material_mark",
+   "regulation_id": "STD-GB-51210-2016-4-0-2",
+   "article": "第4.0.2条",
+   "reason": "align",
+   "judge_dimension": "判断脚手架用型钢、钢板、圆钢构件上是否有可辨识的材质牌号标识（Q235/Q345），不判断钢材实际化学成分与力学性能。"
+  },
+  {
+   "atomic_rule_id": "GB51210-2016-4.0.7@base_jack_material",
+   "regulation_id": "STD-GB-51210-2016-4-0-7",
+   "article": "第4.0.7条",
+   "reason": "align",
+   "judge_dimension": "判断脚手架底座、托座是否为定型加工制作件及其可见外观状态，不判断材质牌号、设计计算过程和力学性能。"
+  },
+  {
+   "atomic_rule_id": "GB51210-2016-4.0.6@steel_plank_thickness",
+   "regulation_id": "STD-GB-51210-2016-4-0-6",
+   "article": "第4.0.6条",
+   "reason": "align",
+   "judge_dimension": "判断冲压钢板脚手板的钢板厚度是否小于1.5mm，不判断材质、强度或耐久性。"
+  },
+  {
+   "atomic_rule_id": "GB51210-2016-4.0.6@perforation_diameter",
+   "regulation_id": "STD-GB-51210-2016-4-0-6",
+   "article": "第4.0.6条",
+   "reason": "align",
+   "judge_dimension": "判断冲压钢板脚手板板面冲孔的内切圆直径是否小于25mm，不判断孔间距或孔形。"
+  },
+  {
+   "atomic_rule_id": "GB51210-2016-4.0.13@scaffold_component_scrap",
+   "regulation_id": "STD-GB-51210-2016-4-0-13",
+   "article": "第4.0.13条",
+   "reason": "align",
+   "judge_dimension": "判断已安装或现场堆放的脚手架杆件、构配件是否存在明显可见的不合格缺陷（严重变形、开裂、锈蚀减薄、焊缝撕裂、连接件损坏等），不判断维修检验台账与报废流程是否履行。"
+  },
+  {
+   "atomic_rule_id": "GB51210-2016-4.0.14@interchangeability",
+   "regulation_id": "STD-GB-51210-2016-4-0-14",
+   "article": "第4.0.14条",
+   "reason": "align",
+   "judge_dimension": "判断同一类型构配件在可见范围内是否规格一致、可互换使用；不判断材料性能、承载力或出厂质量证明。"
+  },
+  {
+   "atomic_rule_id": "GB51210-2016-4.0.14@appearance",
+   "regulation_id": "STD-GB-51210-2016-4-0-14",
+   "article": "第4.0.14条",
+   "reason": "align",
+   "judge_dimension": "判断可见杆件、构配件外观是否存在明显缺陷（如裂纹、严重锈蚀、变形、破损）；不判断出厂质量证明文件及内部材质。"
+  },
+  {
+   "atomic_rule_id": "GB51210-2016-11.2.9@guard_person",
+   "regulation_id": "STD-GB-51210-2016-11-2-9",
+   "article": "第11.2.9条",
+   "reason": "align",
+   "judge_dimension": "判断脚手架搭设或拆除作业区域是否可见监护人员，不判断监护人员资质或是否在岗履职。"
+  },
+  {
+   "atomic_rule_id": "GB51210-2016-8.1.2@node_looseness",
+   "regulation_id": "STD-GB-51210-2016-8-1-2",
+   "article": "第8.1.2条",
+   "reason": "align",
+   "judge_dimension": "判断脚手架杆件连接节点（扣件、盘扣插销、碗扣等）是否存在可见的松动、脱落、未紧固状态；不判断节点强度与转动刚度的计算值。"
+  },
+  {
+   "atomic_rule_id": "GB51210-2016-9.0.3@ground_level",
+   "regulation_id": "STD-GB-51210-2016-9-0-3",
+   "article": "第9.0.3条",
+   "reason": "align",
+   "judge_dimension": "判断脚手架立杆底部搭设场地是否平整、坚实，不判断场地承载力数值或地基处理设计。"
+  },
+  {
+   "atomic_rule_id": "GB51210-2016-9.0.3@drainage",
+   "regulation_id": "STD-GB-51210-2016-9-0-3",
+   "article": "第9.0.3条",
+   "reason": "align",
+   "judge_dimension": "判断脚手架搭设场地及周边可见范围内是否存在积水或排水不畅的可见迹象，不判断排水系统设计。"
+  },
+  {
+   "atomic_rule_id": "GB51210-2016-8.1.5@wood_scope",
+   "regulation_id": "STD-GB-51210-2016-8-1-5",
+   "article": "第8.1.5条",
+   "reason": "align",
+   "judge_dimension": "判断现场木脚手架的使用类型是否限于作业脚手架或支撑脚手架，不判断其构造与节点连接技术。"
+  },
+  {
+   "atomic_rule_id": "GB51210-2016-8.2.5@longitudinal_sweep_bar",
+   "regulation_id": "STD-GB-51210-2016-8-2-5",
+   "article": "第8.2.5条",
+   "reason": "subject",
+   "judge_dimension": "判断作业脚手架底部立杆上是否可见纵向扫地杆，不判断横向扫地杆及扫地杆连接质量。"
+  },
+  {
+   "atomic_rule_id": "GB51210-2016-8.2.5@transverse_sweep_bar",
+   "regulation_id": "STD-GB-51210-2016-8-2-5",
+   "article": "第8.2.5条",
+   "reason": "subject",
+   "judge_dimension": "判断作业脚手架底部立杆上是否可见横向扫地杆，不判断纵向扫地杆及扫地杆连接质量。"
+  },
+  {
+   "atomic_rule_id": "GB51210-2016-10.0.3@material_batch_inspection",
+   "regulation_id": "STD-GB-51210-2016-10-0-3",
+   "article": "第10.0.3条",
+   "reason": "family",
+   "judge_dimension": "判断脚手架材料、构配件和设备的进场批次检验记录是否按品种、规格分类且检验合格；不判断现场材料实物的具体质量指标。"
+  },
+  {
+   "atomic_rule_id": "GB51210-2016-8.3.1@step_height",
+   "regulation_id": "STD-GB-51210-2016-8-3-1",
+   "article": "第8.3.1条",
+   "reason": "align",
+   "judge_dimension": "判断支撑脚手架相邻水平杆之间的竖向步距是否超过2.0m，不判断水平杆的搭接长度或扣件拧紧力矩。"
+  },
+  {
+   "atomic_rule_id": "GB51210-2016-10.0.7@material_inspection",
+   "regulation_id": "STD-GB-51210-2016-10-0-7",
+   "article": "第10.0.7条",
+   "reason": "family",
+   "judge_dimension": "判断脚手架所用材料、构配件和设备的现场检验合格状态，不判断具体材料规格、数量或安装质量。"
+  },
+  {
+   "atomic_rule_id": "GB51210-2016-8.3.5@vertical_diagonal_brace_continuity",
+   "regulation_id": "STD-GB-51210-2016-8-3-5",
+   "article": "第8.3.5条",
+   "reason": "align",
+   "judge_dimension": "判断竖向斜撑杆/竖向交叉拉杆的布置间距与连续性，不判断其材质、连接扣件紧固程度或承载力。"
+  },
+  {
+   "atomic_rule_id": "GB51210-2016-8.3.5@herringbone_symmetric_layout",
+   "regulation_id": "STD-GB-51210-2016-8-3-5",
+   "article": "第8.3.5条",
+   "reason": "align",
+   "judge_dimension": "判断竖向斜撑杆是否采用八字形对称布置形式，不判断其间距和连续性。"
+  },
+  {
+   "atomic_rule_id": "GB51210-2016-8.3.12@spacing_multiple",
+   "regulation_id": "STD-GB-51210-2016-8-3-12",
+   "article": "第8.3.12条",
+   "reason": "align",
+   "judge_dimension": "判断非加密区立杆水平间距是否为加密区立杆水平间距的整数倍，不判断水平杆延伸长度。"
+  },
+  {
+   "atomic_rule_id": "GB51210-2016-11.2.3@anti_slip_clear_snow",
+   "regulation_id": "STD-GB-51210-2016-11-2-3",
+   "article": "第11.2.3条",
+   "reason": "align",
+   "judge_dimension": "判断雨、雪、霜后脚手架上作业时，脚手板表面是否可见积雪未清除或防滑措施缺失；不判断防滑措施的具体力学性能，也不判断非作业状态下的积雪。"
+  }
+ ]
+}
