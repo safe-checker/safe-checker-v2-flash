@@ -430,6 +430,74 @@ def _register_standard_rows() -> None:
         VERIFIED_REGULATIONS[entry["regulation_id"]] = entry
 
 
+def _register_main_system_rows() -> None:
+    """Register the clauses the full checker's rule packs rely on.
+
+    The full checker ships 11 runtime rule packs. Most of their clauses are not
+    in our own verified catalogue, which means a risk reported against one of
+    them could not be given a real citation. The clause text travels with the
+    rule, so the catalogue can be filled from the same source.
+
+    Our own records keep priority: a clause already covered by the rule pack
+    or by a published standard full text is not overwritten.
+    """
+    import json
+    import os
+    from pathlib import Path as _Path
+
+    if os.getenv("MAIN_SYSTEM_CATALOG", "on").strip().lower() in {"off", "0", "false"}:
+        return
+    source = _Path(__file__).resolve().parent / "resources" / "main_system_rules.json"
+    if not source.exists():
+        return
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    added = 0
+    for rule in payload.get("rules") or []:
+        code = str(rule.get("spec_code") or "").strip()
+        article = str(rule.get("spec_clause") or "").strip()
+        text = str(rule.get("clause_text") or "").strip()
+        name = str(rule.get("standard_name") or "").strip() or code
+        if not code or not article or not text:
+            continue
+        regulation_id = str(rule.get("regulation_id") or f"MS-{code}-{article}").strip()
+        if regulation_id in VERIFIED_REGULATIONS:
+            continue
+        keywords = " ".join(str(k) for k in rule.get("keywords") or [])
+        aliases = "|".join(str(a) for a in (rule.get("similar_words") or [])[:12])
+        entry = _record(
+            regulation_id,
+            str(rule.get("scene") or ""),
+            regulation_id,
+            aliases,
+            name,
+            code,
+            f"第{article}条",
+            text,
+            "主系统运行时规则包 resources/rules/generated",
+            keywords,
+            f"{code} 版次（规则包未记录实施日期，引用前须核对）",
+            source_authority="project_rulepack_snapshot",
+            version_status="current_per_project_rulepack",
+            catalog_verification=(
+                "条款文本取自主系统运行时规则包的同名条目，"
+                "属组内规则库来源，非官方发布文本；正式引用前须核对标准现行版本与适用条件。"
+            ),
+            extra={
+                "judge_dimension": rule.get("judge_dimension", ""),
+                "judge_boundary": rule.get("judge_boundary") or {},
+                "disposal_suggestion": rule.get("disposal_suggestion", ""),
+                "from_main_system": True,
+            },
+        )
+        VERIFIED_REGULATIONS[entry["regulation_id"]] = entry
+        added += 1
+    if added:
+        # 这条信息必须走 stderr：模块导入时会执行，打到 stdout 会污染检测器的 JSON 输出
+        import sys
+
+        print(f"已从主系统规则包补入 {added} 条条款", file=sys.stderr)
+
+
 def _register_rulepack_rows() -> None:
     import os
 
@@ -466,6 +534,7 @@ def _register_rulepack_rows() -> None:
 
 _register_standard_rows()
 _register_rulepack_rows()
+_register_main_system_rows()
 
 
 _register_rulepack_rows()

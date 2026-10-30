@@ -37,11 +37,17 @@ from verified_regulations import (
     format_verified_regulation,
     verify_regulation,
 )
+try:  # 生成规则是可选扩展，索引文件缺失时照常运行
+    from generated_rules import GENERATED_BY_SCENE, GENERATED_BY_SUBJECT
+except ImportError:  # pragma: no cover
+    GENERATED_BY_SCENE, GENERATED_BY_SUBJECT = {}, {}
+
 from scene_checklists import (
     AUTO_CORE_DIMENSIONS,
     FAMILY_CORE_DIMENSIONS,
     SCENE_CHECKLISTS,
     SCENE_FAMILY_CHECKLISTS,
+    SCENE_SUBJECT_LINES,
     SUBJECT_CHECKLIST,
     SUBJECT_CHECKLIST_LINES,
 )
@@ -227,15 +233,61 @@ SUBJECT_GROUP_FAMILIES = [
 PPE_SUBJECT = "图片中人员"
 
 
-def _render_subject_section(subject_lines: list[str]) -> str:
+def _group_index() -> tuple[int | None, int]:
+    """Read the concurrent branch index from the environment."""
+    raw = os.environ.get("CHECKLIST_SUBJECT_GROUP", "").strip()
+    if not raw:
+        return None, 1
+    try:
+        index_text, total_text = raw.split("/", 1)
+        index, total = int(index_text), int(total_text)
+    except ValueError:
+        return None, 1
+    if total <= 1 or index < 0 or index >= total:
+        return None, 1
+    return index, total
+
+
+def _render_subject_section(subject_lines: list[str], header: str = "") -> str:
     lines = [
-        "本场景主体清单：先在图中逐条确认下列主体是否存在。只核对确实存在的主体的条目，"
-        "主体不存在直接跳过，不得据推测判定未入镜的主体缺失。",
+        header or ("本场景主体清单：先在图中逐条确认下列主体是否存在。只核对确实存在的主体的条目，"
+                   "主体不存在直接跳过，不得据推测判定未入镜的主体缺失。"),
         "每条格式为「主体[名称] 检查内容｜违规:违规情形」。",
     ]
     lines.extend(subject_lines)
     lines.append(CHECKLIST_USAGE)
     return "\n".join(lines)
+
+
+AUTO_SUBJECT_BUDGET = 12000
+
+
+def _auto_subject_lines() -> list[str]:
+    """The subject lines an AUTO run may use, chosen inside a character budget.
+
+    The catalogue now holds 355 subjects. Handing every branch all of them would
+    push the prompt past what eight seconds allows, so the subjects are picked in
+    priority order until the budget is spent: the hand-written rule pack first,
+    then the generated rules, then the full checker's rules.
+    """
+    budget = env_int("AUTO_SUBJECT_BUDGET", AUTO_SUBJECT_BUDGET)
+    order = []
+    for prefix in ("", "GEN-", "MS-"):
+        for group in SUBJECT_CHECKLIST:
+            if str(group["trigger_id"]).startswith(prefix) and group not in order:
+                order.append(group)
+    lines = []
+    used = 0
+    for group in order:
+        row = next((line for line in SUBJECT_CHECKLIST_LINES
+                    if line.startswith(f"- 主体[{group['subject']}]")), None)
+        if not row:
+            continue
+        if used + len(row) > budget:
+            continue
+        lines.append(row)
+        used += len(row)
+    return lines
 
 
 def _subject_group_lines() -> list[str] | None:
@@ -279,6 +331,52 @@ def _subject_group_lines() -> list[str] | None:
     return lines
 
 
+def _generated_rule_lines(rules: list[dict], limit: int, max_chars: int) -> list[str]:
+    """Render generated rules for the prompt.
+
+    Each line keeps the same shape as the hand-curated checklist so the model
+    reads one format: dimension, then what counts as a violation.
+    """
+    lines: list[str] = []
+    used = 0
+    for rule in rules[: max(0, limit)]:
+        boundary = rule.get("judge_boundary") or {}
+        line = (f"- [{rule.get('standard_code', '')} {rule.get('article', '')}] "
+                f"{rule.get('judge_dimension', '')}"
+                f"｜违规:{str(boundary.get('non_compliant', ''))[:34]}")
+        if used + len(line) > max_chars:
+            break
+        lines.append(line)
+        used += len(line)
+    return lines
+
+
+def _generated_for_scene(scene_key: str) -> list[str]:
+    """Generated rules for one scene, if the opt-in switch is on."""
+    if os.environ.get("USE_GENERATED_RULES", "0").strip() != "1":
+        return []
+    limit = env_int("GENERATED_RULES_LIMIT", 12)
+    max_chars = env_int("GENERATED_RULES_MAX_CHARS", 1400)
+    rules = GENERATED_BY_SCENE.get(scene_key, [])
+    if not rules and scene_key.startswith("SCAFFOLD"):
+        rules = GENERATED_BY_SCENE.get("SCAFFOLD_FAMILY", [])
+    if not rules and scene_key.startswith("LIFTING"):
+        rules = GENERATED_BY_SCENE.get("LIFTING_FAMILY", [])
+    return _generated_rule_lines(rules, limit, max_chars)
+
+
+def _generated_for_subjects(subjects: list[str]) -> list[str]:
+    """Generated rules bound to the subjects a branch is responsible for."""
+    if os.environ.get("USE_GENERATED_RULES", "0").strip() != "1":
+        return []
+    limit = env_int("GENERATED_RULES_LIMIT", 12)
+    max_chars = env_int("GENERATED_RULES_MAX_CHARS", 1400)
+    rules: list[dict] = []
+    for subject in subjects:
+        rules.extend(GENERATED_BY_SUBJECT.get(subject, []))
+    return _generated_rule_lines(rules, limit, max_chars)
+
+
 def build_scene_checklist_section(scene_key: str) -> str:
     """Render the inspection checklist for the scene, if one is available.
 
@@ -295,18 +393,38 @@ def _build_scene_checklist_section(scene_key: str) -> str:
     anchor_key = "lines_with_anchor" if os.environ.get("CHECKLIST_SUBJECT_ANCHOR", "0").strip() == "1" else "lines"
     core_key = "core_lines_with_anchor" if anchor_key == "lines_with_anchor" else "core_lines"
     enabled = {key: data for key, data in SCENE_CHECKLISTS.items() if data.get("enabled")}
-    group_lines = _subject_group_lines()
-    if group_lines is not None:
-        # 并发分支：只给这一组主体。必须优先于场景清单，
-        # 否则每一路拿到的都是同一份完整场景清单，分组等于没做。
-        return _render_subject_section(group_lines)
+    # USE_MAIN_SYSTEM_RULES=0 回到合并前的清单，用于对照实验
+    use_main = os.environ.get("USE_MAIN_SYSTEM_RULES", "1").strip() != "0"
+    if scene_key and scene_key != "AUTO":
+        # 场景已知：只取该场景的主体，并按并发路数均分。
+        # 早先这里直接走族分组，等于丢掉了场景提示——指定"起重吊装"时
+        # 每一路拿到的还是按族切的主体，场景白给了。
+        rows = (SCENE_SUBJECT_LINES.get(scene_key) or []) if use_main else []
+        index, total = _group_index()
+        if rows and index is not None:
+            picked = [row for i, row in enumerate(rows) if i % total == index]
+            label = SCENE_LABELS_ZH.get(scene_key, scene_key)
+            return _render_subject_section(
+                picked,
+                header=f"本场景检查清单（{label}，共{len(rows)}个可查主体，本路负责{len(picked)}个，逐项核对）：")
     if not enabled:
         return ""
     if scene_key and scene_key in enabled:
         data = enabled[scene_key]
         label = SCENE_LABELS_ZH.get(scene_key, scene_key)
-        lines = [f"本场景检查清单（{label}，共{data['dimension_count']}项，逐项核对）："]
-        lines.extend(data[anchor_key])
+        subject_rows = SCENE_SUBJECT_LINES.get(scene_key) or [] if use_main else []
+        if subject_rows:
+            # 场景已知时，用"该场景的可查主体 + 每个主体查什么"组织，
+            # 比只给场景维度的清单覆盖更广，也和 AUTO 路径用同一套主体。
+            lines = [f"本场景检查清单（{label}，{len(subject_rows)}个可查主体，逐项核对）："]
+            lines.extend(subject_rows)
+        else:
+            lines = [f"本场景检查清单（{label}，共{data['dimension_count']}项，逐项核对）："]
+            lines.extend(data[anchor_key])
+        extra = _generated_for_scene(scene_key)
+        if extra:
+            lines.append("补充检查项（来自标准条款，与上面同样适用）：")
+            lines.extend(extra)
         lines.append(CHECKLIST_USAGE)
         return "\n".join(lines)
     if scene_key in SCENE_FAMILY_CHECKLISTS:
@@ -317,6 +435,10 @@ def _build_scene_checklist_section(scene_key: str) -> str:
             f"共{data['dimension_count']}项，逐项核对）：",
         ]
         lines.extend(data[anchor_key])
+        extra = _generated_for_scene(scene_key)
+        if extra:
+            lines.append("补充检查项（来自标准条款，与上面同样适用）：")
+            lines.extend(extra)
         lines.append(CHECKLIST_USAGE)
         return "\n".join(lines)
     if scene_key and scene_key != "AUTO":
@@ -328,10 +450,14 @@ def _build_scene_checklist_section(scene_key: str) -> str:
     if mode == "subject":
         # 主体清单：主系统 trigger→rule 机制在单次调用里的形态。
         # 不要求模型先命名场景，而是先在图中找出出现的主体，只核对出现主体对应的条目。
-        group_lines = _subject_group_lines()
-        if group_lines is not None:
-            return _render_subject_section(group_lines)
-        return _render_subject_section(SUBJECT_CHECKLIST_LINES)
+        # 主体路径：生成主体已经作为主体清单行进来了，不再单独注入，避免重复
+        index, total = _group_index()
+        if index is not None:
+            picked = [row for i, row in enumerate(_auto_subject_lines()) if i % total == index]
+            return _render_subject_section(
+                picked,
+                header="本场景主体清单（场景未定，先确认下列主体是否存在；本路负责其中一部分）：")
+        return _render_subject_section(_auto_subject_lines())
     if mode == "scene":
         # 旧路径：逐场景给核心维度名称，不给判定边界。
         names = "、".join(SCENE_LABELS_ZH.get(key, key) for key in sorted(enabled))

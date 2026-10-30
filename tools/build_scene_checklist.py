@@ -337,6 +337,14 @@ def family_core_lines(family_data: dict[str, dict], limit: int) -> list[str]:
     return out
 
 
+SCENE_FAMILY_BY_SCENE = {
+    "SCAFFOLD_CANTILEVER": ["SCAFFOLD"], "SCAFFOLD_COUPLER_TYPE": ["SCAFFOLD"],
+    "SCAFFOLD_DISC_BUCKLE": ["SCAFFOLD"], "SCAFFOLD_ATTACHED_LIFTING": ["SCAFFOLD"],
+    "TOWER_CRANE": ["LIFTING"], "CONSTRUCTION_HOIST": ["LIFTING"], "LIFTING_OPERATIONS": ["LIFTING"],
+    "TEMPORARY_ELECTRICITY": ["ELECTRICITY"], "FOUNDATION_PIT": ["PIT"],
+    "WORK_AT_HEIGHT": ["HEIGHT"], "GENERAL_SITE": ["GENERAL"],
+}
+
 SCENE_FAMILY = {
     "SCAFFOLD_CANTILEVER": "SCAFFOLD", "SCAFFOLD_COUPLER_TYPE": "SCAFFOLD",
     "SCAFFOLD_DISC_BUCKLE": "SCAFFOLD", "SCAFFOLD_ATTACHED_LIFTING": "SCAFFOLD",
@@ -348,6 +356,11 @@ SCENE_FAMILY = {
 
 def scene_family(scene: str) -> str:
     return SCENE_FAMILY.get(scene, "GENERAL")
+
+
+def scene_families(scene: str) -> list[str]:
+    """The device families a scene belongs to."""
+    return SCENE_FAMILY_BY_SCENE.get(scene, [])
 
 
 def build_subjects() -> list[dict]:
@@ -383,6 +396,7 @@ def build_subjects() -> list[dict]:
                     "dimension": dimension,
                     "boundary": row.get("judge_boundary") or {},
                     "scenes": sorted(set(row.get("scene_types") or [])),
+                    "source": "rulepack",
                 })
             group["scenes"].update(row.get("scene_types") or [])
     subjects = []
@@ -394,6 +408,166 @@ def build_subjects() -> list[dict]:
         group["families"] = sorted({scene_family(scene) for scene in group["scenes"]})
     # 通用人员主体排前面，人员防护是每张图都要看的
     subjects.sort(key=lambda item: (0 if item["subject"] == "图片中人员" else 1, -len(item["dimensions"]), item["subject"]))
+    subjects.extend(_generated_subjects())
+    return subjects
+
+
+GENERATED_RULES_PATH = BASE / "resources" / "generated_rules.json"
+# 场景键 -> 设备族
+SCENE_HINT_FAMILY = {
+    "SCAFFOLD_CANTILEVER": "SCAFFOLD", "SCAFFOLD_COUPLER_TYPE": "SCAFFOLD",
+    "SCAFFOLD_DISC_BUCKLE": "SCAFFOLD", "SCAFFOLD_ATTACHED_LIFTING": "SCAFFOLD",
+    "SCAFFOLD_FAMILY": "SCAFFOLD",
+    "TOWER_CRANE": "LIFTING", "CONSTRUCTION_HOIST": "LIFTING",
+    "LIFTING_OPERATIONS": "LIFTING", "LIFTING_FAMILY": "LIFTING",
+    "TEMPORARY_ELECTRICITY": "ELECTRICITY", "FOUNDATION_PIT": "PIT",
+    "WORK_AT_HEIGHT": "HEIGHT", "GENERAL_SITE": "GENERAL",
+}
+
+
+def _generated_subjects() -> list[dict]:
+    """Subjects that only exist because a standard clause needed one.
+
+    The hand-written rule pack brings 62 subjects. A clause that is turned into
+    a rule may need a subject nobody wrote down, and the model names it. Those
+    subjects join the catalogue with the recognition cue the model gave, so the
+    concurrent branches and the rule lookup can both see them.
+    """
+    if not GENERATED_RULES_PATH.exists():
+        return []
+    import json
+    rules = json.loads(GENERATED_RULES_PATH.read_text(encoding="utf-8"))
+    grouped: dict[str, dict] = {}
+    for rule in rules:
+        if rule.get("subject_origin") != "new":
+            continue
+        name = str(rule.get("subject") or "").strip()
+        if not name:
+            continue
+        entry = grouped.setdefault(name, {
+            "trigger_id": f"GEN-{abs(hash(name)) % 10**8:08d}",
+            "subject": name,
+            "trigger_name": name,
+            "cues": [],
+            "visibility_tag": "外观",
+            "recognition_mode": "vlm_visual",
+            "observable_cues": [],
+            "scenes": [],
+            "families": [],
+            "dimensions": [],
+        })
+        cue = str(rule.get("subject_cue") or "").strip()
+        if cue and cue not in entry["observable_cues"]:
+            entry["observable_cues"].append(cue)
+            entry["cues"].append(cue)
+        scene = str(rule.get("scene_hint") or "GENERAL_SITE")
+        if scene not in entry["scenes"]:
+            entry["scenes"].append(scene)
+        family = SCENE_HINT_FAMILY.get(scene, "GENERAL")
+        if family not in entry["families"]:
+            entry["families"].append(family)
+        dimension = str(rule.get("judge_dimension") or "").strip()
+        if dimension and not any(d["dimension"] == dimension for d in entry["dimensions"]):
+            entry["dimensions"].append({
+                "dimension": dimension,
+                "scenes": [scene],
+                "boundary": rule.get("judge_boundary") or {},
+            })
+    out = []
+    for entry in grouped.values():
+        entry["scenes"] = sorted(entry["scenes"])
+        entry["families"] = sorted(entry["families"])
+        out.append(entry)
+    out.sort(key=lambda item: item["trigger_name"])
+    return out
+
+
+MAIN_SYSTEM_RULES_PATH = BASE / "resources" / "main_system_rules.json"
+# 主系统规则包的场景提示 -> 我们的场景键
+MAIN_SCENE_KEY = {
+    "施工用电": "TEMPORARY_ELECTRICITY", "临时用电": "TEMPORARY_ELECTRICITY",
+    "高处作业": "WORK_AT_HEIGHT", "基坑": "FOUNDATION_PIT",
+    "起重吊装": "LIFTING_OPERATIONS", "塔吊": "TOWER_CRANE",
+    "施工升降机": "CONSTRUCTION_HOIST",
+    "悬挑式脚手架": "SCAFFOLD_CANTILEVER", "扣件式脚手架": "SCAFFOLD_COUPLER_TYPE",
+    "盘扣式脚手架": "SCAFFOLD_DISC_BUCKLE",
+    "附着式升降脚手架": "SCAFFOLD_ATTACHED_LIFTING",
+}
+# 每个主体最多带多少条规则进提示词
+MAX_RULES_PER_SUBJECT = int(os.environ.get("MAX_RULES_PER_SUBJECT", "4"))
+
+
+def _main_system_rules() -> list[dict]:
+    """Rules from the full checker's runtime rule packs, keyed by subject."""
+    if not MAIN_SYSTEM_RULES_PATH.exists():
+        return []
+    import json
+    payload = json.loads(MAIN_SYSTEM_RULES_PATH.read_text(encoding="utf-8"))
+    by_subject: dict[str, list[dict]] = {}
+    for rule in payload.get("rules") or []:
+        dimension = str(rule.get("judge_dimension") or "").strip()
+        if not dimension:
+            continue
+        for trigger in rule.get("triggers") or []:
+            name = str(trigger.get("trigger_name") or "").strip()
+            if not name:
+                continue
+            by_subject.setdefault(name, []).append({
+                "dimension": dimension,
+                "boundary": rule.get("judge_boundary") or {},
+                "scenes": [rule.get("scene_hint") or ""],
+                "source": "main_system",
+                "standard_code": rule.get("spec_code") or "",
+                "article": str(rule.get("spec_clause") or ""),
+            })
+    return by_subject
+
+
+def merge_main_system_into_subjects(subjects: list[dict]) -> list[dict]:
+    """Fold the full checker's rules into the subject catalogue.
+
+    The two catalogues share every subject we had, so the merge is by name.
+    A subject that only exists in the full checker is added, with the scene
+    family taken from the rule pack it came from.
+    """
+    extra = _main_system_rules()
+    if not extra:
+        return subjects
+    index = {group["subject"]: group for group in subjects}
+    for name, rules in extra.items():
+        group = index.get(name)
+        if group is None:
+            scene_key = MAIN_SCENE_KEY.get(str(rules[0]["scenes"][0]), "GENERAL_SITE")
+            group = {
+                "trigger_id": f"MS-{abs(hash(name)) % 10**8:08d}",
+                "subject": name,
+                "trigger_name": name,
+                "cues": [],
+                "observable_cues": [],
+                "dimensions": [],
+                "scenes": [scene_key],
+                "families": list(SCENE_FAMILY_BY_SCENE.get(scene_key, ["GENERAL"])),
+                "origin": "main_system",
+            }
+            index[name] = group
+            subjects.append(group)
+        for rule in rules:
+            if any(d["dimension"] == rule["dimension"] for d in group["dimensions"]):
+                continue
+            group["dimensions"].append(rule)
+        # 主系统的主体是按具体场景分的，合并进来的规则也要挂到对应场景上
+        for scene_key in {MAIN_SCENE_KEY.get(str(r["scenes"][0]), "GENERAL_SITE") for r in rules}:
+            if scene_key not in group.get("scenes", []):
+                group.setdefault("scenes", []).append(scene_key)
+            for family in SCENE_FAMILY_BY_SCENE.get(scene_key, ["GENERAL"]):
+                if family not in group.setdefault("families", []):
+                    group["families"].append(family)
+    # 每个主体只保留有限条"主系统补充规则"进提示词。
+    # 规则包里人工整理的条目一律保留：那是质量最高的一批，不能被机器生成的挤掉。
+    for group in subjects:
+        own = [d for d in group["dimensions"] if d.get("source") != "main_system"]
+        extra = [d for d in group["dimensions"] if d.get("source") == "main_system"]
+        group["dimensions"] = own + extra[:MAX_RULES_PER_SUBJECT]
     return subjects
 
 
@@ -421,6 +595,7 @@ def main() -> int:
     checklists = build()
     families = build_families(checklists)
     subjects = build_subjects()
+    subjects = merge_main_system_into_subjects(subjects)
     subject_lines = render_subject_lines(subjects)
     lines = [
         '"""Per-scene inspection checklists generated from the rule pack.',
@@ -494,6 +669,30 @@ def main() -> int:
             lines.append(f"            {item!r},")
         lines.append("        ],")
         lines.append("    },")
+    lines.append("}")
+    lines.append("")
+    # 每个场景的主体清单行：场景已知时直接用它，等于把"该场景有哪些可查主体、
+    # 每个主体查什么"一次给全，不必再让模型先分类。
+    lines.append("SCENE_SUBJECT_LINES: dict[str, list[str]] = {")
+    line_by_subject = {}
+    for line in subject_lines:
+        if line.startswith("- 主体["):
+            name = line.split("]", 1)[0].split("[", 1)[1]
+            line_by_subject[name] = line
+    for scene in sorted(checklists):
+        names = sorted({group["subject"] for group in subjects
+                        if scene in group.get("scenes", [])})
+        lines.append(f"    {scene!r}: {[line_by_subject[n] for n in names if n in line_by_subject]!r},")
+    lines.append("}")
+    lines.append("")
+    lines.append("SCENE_SUBJECTS: dict[str, list[str]] = {")
+    # 主体按它自己的场景归属来分，而不是按设备族：
+    # 主系统的主体是按具体场景分的（悬挑式 32 个、扣件式 33 个），
+    # 按族取会把四个场景的主体重叠在一起。
+    for scene, data in checklists.items():
+        names = sorted({group["subject"] for group in subjects
+                        if scene in group.get("scenes", [])})
+        lines.append(f"    {scene!r}: {names!r},")
     lines.append("}")
     lines.append("")
     lines.append("SUBJECT_CHECKLIST: list[dict[str, Any]] = [")

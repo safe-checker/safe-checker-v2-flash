@@ -1183,7 +1183,12 @@ class SceneFamilyChecklistTests(unittest.TestCase):
         self.assertTrue(all(row.get("triggers") for row in RULEPACK_ROWS))
         dims = {d["dimension"] for group in SUBJECT_CHECKLIST for d in group["dimensions"]}
         expected = {row["judge_dimension"] for row in RULEPACK_ROWS}
-        self.assertEqual(dims, expected)
+        # 规则包里人工整理的维度必须一条不少地留在清单里；
+        # 主系统补充的维度会按每主体条数上限截断，所以只要求它们来自补充来源
+        extra = {d["dimension"] for group in SUBJECT_CHECKLIST for d in group["dimensions"]
+                 if d.get("source") != "rulepack"}
+        self.assertTrue(expected.issubset(dims))
+        self.assertTrue((dims - expected).issubset(extra))
         # 同一个维度可以挂在多个主体上，所以主体-维度对会多于规则数
         bound = sum(len(group["dimensions"]) for group in SUBJECT_CHECKLIST)
         self.assertGreater(bound, len(expected))
@@ -1205,6 +1210,64 @@ class SceneFamilyChecklistTests(unittest.TestCase):
                 os.environ["CHECKLIST_AUTO_MODE"] = previous
         self.assertIn("主体[", section)
         self.assertIn("主体不存在直接跳过", section)
+
+    def test_cleaned_clauses_drop_explanatory_notes(self) -> None:
+        """条文说明不是规范正文，拿它生成规则会产出假规则。"""
+        import json
+        from pathlib import Path as _Path
+
+        report = _Path(__file__).parent / "resources" / "standards" / "clean_report.json"
+        if not report.exists():
+            self.skipTest("还没有清洗结果")
+        data = json.loads(report.read_text(encoding="utf-8"))
+        self.assertLess(data["dropped_explanatory"], data["total"] * 0.1)
+        for item in data["dropped_detail"]:
+            self.assertTrue(item["reason"])
+
+    def test_scene_subject_index_covers_every_scene(self) -> None:
+        from scene_checklists import SCENE_SUBJECTS
+
+        for scene, subjects in SCENE_SUBJECTS.items():
+            self.assertTrue(subjects, f"{scene} 没有绑定主体")
+        self.assertGreaterEqual(len(SCENE_SUBJECTS["SCAFFOLD_CANTILEVER"]), 30)
+
+    def test_main_system_rules_extend_the_catalogue(self) -> None:
+        """主系统规则包带进来的主体与条款必须真正落到目录里。"""
+        import json
+        from pathlib import Path as _Path
+
+        from verified_regulations import VERIFIED_REGULATIONS
+
+        source = _Path(__file__).parent / "resources" / "main_system_rules.json"
+        if not source.exists():
+            self.skipTest("还没有导入主系统规则")
+        payload = json.loads(source.read_text(encoding="utf-8"))
+        self.assertGreater(payload["subject_count"], 300)
+        from scene_checklists import SUBJECT_CHECKLIST
+
+        names = {group["subject"] for group in SUBJECT_CHECKLIST}
+        for subject in payload["subjects"][:40]:
+            self.assertIn(subject["subject"], names)
+        # 主系统规则里的条款应当能在已核验目录里找到
+        missing = 0
+        for rule in payload["rules"][:120]:
+            if rule["regulation_id"] not in VERIFIED_REGULATIONS:
+                missing += 1
+        self.assertEqual(missing, 0)
+
+    def test_generated_rules_are_opt_in(self) -> None:
+        """生成规则默认不进提示词，生产路径不能被动。"""
+        import os
+
+        from safety_check import build_scene_checklist_section
+
+        previous = os.environ.pop("USE_GENERATED_RULES", None)
+        try:
+            section = build_scene_checklist_section("SCAFFOLD_CANTILEVER")
+        finally:
+            if previous is not None:
+                os.environ["USE_GENERATED_RULES"] = previous
+        self.assertNotIn("补充检查项", section)
 
     def test_risk_item_cap_is_configurable_and_bounded(self) -> None:
         import os
