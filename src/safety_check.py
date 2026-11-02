@@ -2438,7 +2438,7 @@ def call_deepseek(
     timeout_seconds: float,
     max_attempts: int | None = None,
     retry_min_budget: float | None = None,
-) -> tuple[str, int]:
+) -> tuple[str, int, dict[str, int]]:
     """Send the request, retrying transient failures inside the time budget.
 
     The budget is shared by all attempts. A failure that consumed the whole
@@ -2483,6 +2483,13 @@ def call_deepseek(
             raise ModelBudgetExhausted("DeepSeek request exhausted its total time budget.") from last_error
         try:
             data = asyncio.run(request_with_deadline(remaining))
+            usage = data.get("usage") or {}
+            token_usage = {
+                "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+                "completion_tokens": int(usage.get("completion_tokens") or 0),
+                "cache_hit_tokens": int(usage.get("prompt_cache_hit_tokens") or 0),
+                "cache_miss_tokens": int(usage.get("prompt_cache_miss_tokens") or 0),
+            }
             break
         except ModelBudgetExhausted:
             raise
@@ -2527,7 +2534,7 @@ def call_deepseek(
         message = choice["message"]
         content = message.get("content")
         if isinstance(content, str) and content.strip():
-            return content.strip(), attempts
+            return content.strip(), attempts, token_usage
 
         finish_reason = choice.get("finish_reason", "unknown")
         if message.get("reasoning_content"):
@@ -2807,7 +2814,7 @@ def main() -> int:
             raise ValueError("DEEPSEEK_VISION_TIMEOUT_SECONDS must be finite and positive.")
         model_timeout = min(model_timeout, remaining)
         call_started = time.perf_counter()
-        raw, model_attempts = call_deepseek(
+        raw, model_attempts, token_usage = call_deepseek(
             payload,
             api_key=api_key,
             base_url=base_url,
@@ -2849,6 +2856,7 @@ def main() -> int:
         timings = {
             "preprocess": round(preprocess_elapsed, 4),
             "model_attempts": model_attempts,
+            "token_usage": token_usage,
             "deepseek_vision": round(model_elapsed, 4),
             "parse_normalize": round(parse_elapsed, 4),
             "report_format": round(report_elapsed, 4),

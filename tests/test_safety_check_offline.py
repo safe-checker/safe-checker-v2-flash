@@ -1579,7 +1579,7 @@ class ModelRetryTests(unittest.TestCase):
 
         client = self._client(post)
         with patch("safety_check.httpx.AsyncClient", return_value=client):
-            content, attempts = call_deepseek({}, "key", "https://example.invalid", timeout_seconds=5.0)
+            content, attempts, usage = call_deepseek({}, "key", "https://example.invalid", timeout_seconds=5.0)
         self.assertEqual(content, '{"status":"CLEAR"}')
         self.assertEqual(attempts, 2)
         self.assertEqual(client.post.await_count, 2)
@@ -1627,7 +1627,7 @@ class ModelRetryTests(unittest.TestCase):
 
         client = self._client(post)
         with patch("safety_check.httpx.AsyncClient", return_value=client):
-            _, attempts = call_deepseek({}, "key", "https://example.invalid", timeout_seconds=5.0)
+            _, attempts, _ = call_deepseek({}, "key", "https://example.invalid", timeout_seconds=5.0)
         self.assertEqual(attempts, 2)
 
     def test_transient_classification(self) -> None:

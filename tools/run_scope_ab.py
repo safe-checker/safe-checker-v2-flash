@@ -57,11 +57,11 @@ def run_branch(image, scene, g, total, scope):
         d = json.loads(p.stdout[p.stdout.index('{'):])
     except ValueError:
         return {'status': 'error', 'err': 'unparsable', 'wall': round(wall, 2),
-                'msg': p.stdout[-120:] + p.stderr[-120:]}
+                'msg': p.stdout[-120:] + p.stderr[-120:], 'usage': {}}
     err = d.get('error') or {}
     return {'status': d.get('status'), 'err': err.get('type') or '',
             'msg': str(err.get('message') or '')[:200], 'wall': round(wall, 2),
-            'issues': d.get('issues') or []}
+            'issues': d.get('issues') or [], 'usage': d.get('token_usage') or {}}
 
 
 def merge(issues):
@@ -130,6 +130,9 @@ def main():
                        'branch_status': [o['status'] for o in outs],
                        'branch_errors': [o.get('err') or '' for o in outs],
                        'branch_wall': [o['wall'] for o in outs],
+                       'usage': {k: sum(int(o.get('usage', {}).get(k) or 0) for o in outs)
+                                 for k in ('prompt_tokens', 'completion_tokens',
+                                           'cache_hit_tokens', 'cache_miss_tokens')},
                        'fallback': fallback}
             rec = {'sample_id': lab['sample_id'], 'version': name, 'budget_seconds': 8.0,
                    'test_scene': scene, 'image_path': str(image),

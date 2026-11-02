@@ -130,7 +130,11 @@ def main() -> int:
     parser.add_argument("labels")
     parser.add_argument("--out", default="")
     parser.add_argument("--concurrency", type=int, default=12)
+    parser.add_argument("--versions", default="",
+                        help="只判这些版本，逗号分隔。默认全判。")
     args = parser.parse_args()
+
+    wanted = {name.strip() for name in args.versions.split(",") if name.strip()}
 
     records_path = Path(args.records)
     labels = load_labels(Path(args.labels))
@@ -143,6 +147,8 @@ def main() -> int:
             continue
         sample_id = record["sample_id"]
         if sample_id not in labels:
+            continue
+        if wanted and str(record.get("version") or "") not in wanted:
             continue
         items.append({
             "sample_id": sample_id,
