@@ -278,11 +278,14 @@ def _auto_subject_lines() -> list[str]:
                 order.append(group)
     lines = []
     used = 0
+    concise = os.environ.get("CONCISE_SUBJECTS", "1").strip() != "0"
     for group in order:
         row = next((line for line in SUBJECT_CHECKLIST_LINES
                     if line.startswith(f"- 主体[{group['subject']}]")), None)
         if not row:
             continue
+        if concise:
+            row = _concise_subject_row(row)
         if used + len(row) > budget:
             continue
         lines.append(row)
@@ -377,6 +380,187 @@ def _generated_for_subjects(subjects: list[str]) -> list[str]:
     return _generated_rule_lines(rules, limit, max_chars)
 
 
+# 混合清单：把三种内容拼在一起，按字符预算裁剪。
+#
+#   1. 场景维度清单 —— 缺陷级措辞，和标注里的缺陷几乎逐字对应
+#      （"当前停层处层门存在" 对 "未安装层门或层门不起作用"）。
+#      这一段以前被并发分组整个跳过了，是 140 张命中率从 73.5% 掉到 27.4% 的主因。
+#   2. 场景主体明细 —— 场景专属的配置类检查项，来自主系统的 trigger→rule。
+#   3. 跨场景通用主体 —— 脚手架/起重/临电/基坑家族的通用条目，广覆盖。
+#
+# 三段一起给，模型才既有"这个缺陷长什么样"的措辞，又有"这个场景要查哪些东西"的广度。
+SCENE_CHECKLIST_BUDGET = 3800
+
+
+def _generic_subject_rows(scene_key: str) -> list[str]:
+    """Cross scene subject rows, the ones that fit this scene first.
+
+    The families are ordered by how close they are to the scene at hand: a
+    hoist scene wants the lifting family before the scaffold one.
+    """
+    family_of_scene = {
+        "SCAFFOLD_CANTILEVER": "SCAFFOLD", "SCAFFOLD_COUPLER_TYPE": "SCAFFOLD",
+        "SCAFFOLD_DISC_BUCKLE": "SCAFFOLD", "SCAFFOLD_ATTACHED_LIFTING": "SCAFFOLD",
+        "TOWER_CRANE": "LIFTING", "CONSTRUCTION_HOIST": "LIFTING",
+        "LIFTING_OPERATIONS": "LIFTING", "TEMPORARY_ELECTRICITY": "ELECTRICITY",
+        "WORK_AT_HEIGHT": "HEIGHT", "FOUNDATION_PIT": "PIT", "GENERAL_SITE": "GENERAL",
+    }
+    wanted = family_of_scene.get(scene_key, "GENERAL")
+    row_of_subject = {}
+    for row in SUBJECT_CHECKLIST_LINES:
+        match = re.match(r"- 主体\[(.+?)\]", row)
+        if match:
+            row_of_subject.setdefault(match.group(1), row)
+    scored: list[tuple[int, str]] = []
+    for group in SUBJECT_CHECKLIST:
+        row = row_of_subject.get(group["subject"])
+        if not row:
+            continue
+        families = set(group.get("families") or [])
+        scenes = set(group.get("scenes") or [])
+        if wanted in families and scene_key in scenes:
+            rank = 0
+        elif wanted in families:
+            rank = 1
+        elif scenes:
+            rank = 2
+        else:
+            rank = 3
+        scored.append((rank, row))
+    scored.sort(key=lambda item: item[0])
+    return [row for _, row in scored]
+
+
+# 并发分支的家族分组，和 2026-10-30 之前那版一致。
+#
+# 那版不按场景切，而是按"脚手架 / 起重与升降 / 临时用电 / 基坑·高处·综合"四族切，
+# 于是任何场景都能查到跨场景的通用隐患（临边、积水、杂物、防护损坏、开口未封闭）。
+# 140 张实测这一版明显更好：同一批 35 张上命中 71.4%，而按场景切主体只有 50%~56%。
+# 场景提示还在（用户指定场景写在请求里），只是清单不再被场景锁死。
+SUBJECT_GROUP_FAMILIES = [
+    ("脚手架", ("SCAFFOLD",)),
+    ("起重与升降设备", ("LIFTING",)),
+    ("临时用电", ("ELECTRICITY",)),
+    ("基坑·高处·综合", ("PIT", "HEIGHT", "GENERAL")),
+]
+PPE_SUBJECT = "图片中人员"
+
+
+def _concise_subject_row(row: str, max_dimensions: int = 4, max_clauses: int = 3) -> str:
+    """Shorten one subject row without losing what the model has to look for.
+
+    The rule pack subjects were rebuilt from the cleaned standards, so each row
+    now carries every dimension and every violation clause. That makes the
+    checklist long enough to push the answer past the eight second budget, and
+    a long checklist is also a checklist the model reads less carefully. The
+    first few dimensions and the first few clauses are the ones that match how
+    the defects are actually phrased.
+    """
+    match = re.match(r"(- 主体\[(.+?)\] )(.+?)(｜违规:(.*))$", row, re.S)
+    if not match:
+        return row
+    head, subject, dimensions, _, violations = match.groups()
+    parts = [part for part in dimensions.split("、") if part.strip()][:max_dimensions]
+    clauses: list[str] = []
+    for clause in violations.split("；"):
+        clause = clause.strip()
+        if not clause:
+            continue
+        if len(clause) > 34:
+            clause = clause[:34] + "…"
+        clauses.append(clause)
+        if len(clauses) >= max_clauses:
+            break
+    return f"{head}{'、'.join(parts)}｜违规:{'；'.join(clauses)}"
+
+
+def _family_subject_rows(index: int, total: int) -> list[str]:
+    """The subject rows of one branch when the work is split by family."""
+    if total <= 1:
+        # 单路就是全部家族，不能只落一个家族
+        rows = [
+            row for group in SUBJECT_CHECKLIST
+            for row in [next((line for line in SUBJECT_CHECKLIST_LINES
+                              if line.startswith(f"- 主体[{group['subject']}]")), None)]
+            if row
+        ]
+        if os.environ.get("CONCISE_SUBJECTS", "1").strip() != "0":
+            rows = [_concise_subject_row(row) for row in rows]
+        return rows
+    groups = SUBJECT_GROUP_FAMILIES[:total]
+    if total < len(SUBJECT_GROUP_FAMILIES):
+        head = groups[:-1]
+        tail = groups[-1]
+        merged: set[str] = set()
+        for _, families in groups[total - 1:]:
+            merged |= set(families)
+        groups = head + [(tail[0], tuple(sorted(merged)))]
+    wanted = set(groups[index][1])
+    # 只用规则包那 62 个主体。主系统那 268 个和反向生成的 25 个条目又长又细，
+    # 同一分组下清单会从 2.6k 字涨到 20k 字，提示词直接撑爆八秒。
+    only_rule_pack = os.environ.get("RULE_PACK_ONLY", "1").strip() != "0"
+    rows: list[str] = []
+    for group in SUBJECT_CHECKLIST:
+        subject = group["subject"]
+        trigger = str(group.get("trigger_id") or "")
+        if only_rule_pack and (trigger.startswith("MS-") or trigger.startswith("GEN-")):
+            continue
+        families = set(group.get("families") or [])
+        if subject == PPE_SUBJECT:
+            # 人员防护只归最后一组，免得每一路都重复报同一件事
+            if index != total - 1:
+                continue
+        if not families & wanted:
+            continue
+        row = next((line for line in SUBJECT_CHECKLIST_LINES
+                    if line.startswith(f"- 主体[{subject}]")), None)
+        if row:
+            if os.environ.get("CONCISE_SUBJECTS", "1").strip() != "0":
+                row = _concise_subject_row(row)
+            rows.append(row)
+    return rows
+
+
+def _hybrid_checklist(scene_key: str, index: int | None, total: int) -> str:
+    """Build the scene checklist from the three sources the model needs."""
+    enabled = {key: data for key, data in SCENE_CHECKLISTS.items() if data.get("enabled")}
+    label = SCENE_LABELS_ZH.get(scene_key, scene_key)
+    lines: list[str] = []
+    used = 0
+    budget = env_int("SCENE_CHECKLIST_BUDGET", SCENE_CHECKLIST_BUDGET)
+
+    data = enabled.get(scene_key) or {}
+    dimension_lines = list(data.get("lines") or [])
+    if dimension_lines:
+        lines.append(f"【一】本场景检查要点（{label}，共{len(dimension_lines)}项，逐项核对）：")
+        lines.extend(dimension_lines)
+        used += sum(len(line) + 1 for line in dimension_lines)
+
+    def take(rows: list[str], title: str) -> None:
+        nonlocal used
+        picked: list[str] = []
+        for position, row in enumerate(rows):
+            if used + len(row) + 1 > budget:
+                break
+            picked.append(row)
+            used += len(row) + 1
+        if picked:
+            lines.append(title)
+            lines.extend(picked)
+
+    scene_rows = list(SCENE_SUBJECT_LINES.get(scene_key) or [])
+    generic_rows = _generic_subject_rows(scene_key)
+    if index is not None and total > 1:
+        # 并发分支：两段各自按路切分，四路并起来才覆盖全部。
+        scene_rows = [row for position, row in enumerate(scene_rows) if position % total == index]
+        generic_rows = [row for position, row in enumerate(generic_rows) if position % total == index]
+
+    take(scene_rows, f"【二】本场景主体明细（{label}，本路负责{len(scene_rows)}个，逐项核对）：")
+    take(generic_rows, "【三】跨场景通用检查主体（本路负责其中一部分，图里出现就核对）：")
+    lines.append(CHECKLIST_USAGE)
+    return "\n".join(lines)
+
+
 def build_scene_checklist_section(scene_key: str) -> str:
     """Render the inspection checklist for the scene, if one is available.
 
@@ -396,6 +580,34 @@ def _build_scene_checklist_section(scene_key: str) -> str:
     # USE_MAIN_SYSTEM_RULES=0 回到合并前的清单，用于对照实验
     use_main = os.environ.get("USE_MAIN_SYSTEM_RULES", "1").strip() != "0"
     if scene_key and scene_key != "AUTO":
+        # 默认 family：家族主体 + 精简渲染。140 张实测这一档最好（见 AGENTS.md）。
+        scope = os.environ.get("SCENE_CHECKLIST_SCOPE", "family").strip().lower() or "family"
+        if scope == "hybrid":
+            index, total = _group_index()
+            return _hybrid_checklist(scene_key, index, total)
+        if scope in {"family", "family_dims"} and scene_key not in SCENE_FAMILY_CHECKLISTS:
+            # 明确点名"脚手架"这种家族请求，交给家族维度清单（它写明悬挑式/扣件式/盘扣式的差别）；
+            # 具体场景才走家族分组的主体清单。
+            index, total = _group_index()
+            if index is None:
+                index, total = 0, 1
+            rows = _family_subject_rows(index, total)
+            label = SCENE_LABELS_ZH.get(scene_key, scene_key)
+            lines: list[str] = []
+            if scope == "family_dims":
+                data = enabled.get(scene_key) or {}
+                dims = list(data.get("lines") or [])
+                if dims:
+                    lines.append(f"【一】本场景检查要点（{label}，共{len(dims)}项，逐项核对）：")
+                    lines.extend(dims)
+                    lines.append(f"【二】跨场景通用检查主体（本路负责{len(rows)}个，图里出现就核对）：")
+            else:
+                lines.append(f"本场景主体清单：先在图中逐条确认下列主体是否存在。只核对确实存在的主体的条目，"
+                             f"主体不存在直接跳过，不得据推测判定未入镜的主体缺失。")
+                lines.append("每条格式为「主体[名称] 检查内容｜违规:违规情形」。")
+            lines.extend(rows)
+            lines.append(CHECKLIST_USAGE)
+            return "\n".join(lines)
         # 场景已知：取该场景的主体清单。
         #
         # SCENE_CHECKLIST_SCOPE 决定这份清单在并发时怎么分：
@@ -474,11 +686,24 @@ def _build_scene_checklist_section(scene_key: str) -> str:
         # 主体路径：生成主体已经作为主体清单行进来了，不再单独注入，避免重复
         index, total = _group_index()
         if index is not None:
-            picked = [row for i, row in enumerate(_auto_subject_lines()) if i % total == index]
+            # 和已知场景同源：按家族分组，四路并起来覆盖全部。
+            rows = _family_subject_rows(index, total)
             return _render_subject_section(
-                picked,
+                rows,
                 header="本场景主体清单（场景未定，先确认下列主体是否存在；本路负责其中一部分）：")
-        return _render_subject_section(_auto_subject_lines())
+        # 单路没有分组时，用规则包那 62 个主体按预算装，
+        # 355 个全塞进去是 1.2 万 token，八秒装不下。
+        rows = _family_subject_rows(0, 1)
+        # 单路的清单不能按 12000 字的预算装，否则提示词到 1.2 万 token，八秒装不下。
+        budget = env_int("AUTO_SINGLE_BUDGET", 4200)
+        kept: list[str] = []
+        used = 0
+        for row in rows:
+            if used + len(row) > budget:
+                break
+            kept.append(row)
+            used += len(row)
+        return _render_subject_section(kept)
     if mode == "scene":
         # 旧路径：逐场景给核心维度名称，不给判定边界。
         names = "、".join(SCENE_LABELS_ZH.get(key, key) for key in sorted(enabled))

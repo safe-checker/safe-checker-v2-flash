@@ -26,10 +26,19 @@ CHECKER = str(BASE)
 SET = Path(os.environ.get('EVAL_SET', '/tmp/safety_eval/图片集_140张'))
 
 ARMS = {
-    'split1': dict(scope='split', groups=1),
-    'full1':  dict(scope='full',  groups=1),
-    'full4':  dict(scope='full',  groups=4),
+    'split1':  dict(scope='split',  groups=1),
+    'full1':   dict(scope='full',   groups=1),
+    'full4':   dict(scope='full',   groups=4),
+    'hybrid1': dict(scope='hybrid', groups=1),
+    'hybrid4': dict(scope='hybrid', groups=4),
+    'family4':  dict(scope='family',  groups=4),
+    'family1':  dict(scope='family',  groups=1),
+    'famdims4': dict(scope='family_dims', groups=4),
 }
+# 上游在持续压测下会变慢（超时率从 8% 涨到 50%），图与图之间留一点间隔
+PACE_SECONDS = float(os.environ.get('EVAL_PACE_SECONDS', '1.5'))
+# 只跑需要的臂：EVAL_ARMS=hybrid1,hybrid4
+WANTED = [name.strip() for name in os.environ.get('EVAL_ARMS', '').split(',') if name.strip()]
 
 
 def run_branch(image, scene, g, total, scope):
@@ -89,10 +98,13 @@ def main():
         counts[sc] = counts.get(sc, 0)
         if counts[sc] < per_scene:
             counts[sc] += 1; picked.append(lab)
-    print(f'取样 {len(picked)} 张（每场景 {per_scene} 张），共 {len(picked)*len(ARMS)} 组', file=sys.stderr)
+    arms = len(WANTED) if WANTED else len(ARMS)
+    print(f'取样 {len(picked)} 张（每场景 {per_scene} 张），共 {len(picked)*arms} 组', file=sys.stderr)
     for i, lab in enumerate(picked):
         image = SET / lab['image_path']; scene = lab['test_scene']
         for name, cfg in ARMS.items():
+            if WANTED and name not in WANTED:
+                continue
             if (lab['sample_id'], name) in done:
                 continue
             groups, scope = cfg['groups'], cfg['scope']
@@ -105,6 +117,11 @@ def main():
                 # 全路失败：再单路试一次，别让这条记录静默变空
                 outs = [run_branch(image, scene, 0, 1, scope)]
                 fallback = 'single_retry'
+            # 余额耗尽要立刻停，否则后面的调用全是空转
+            if any('insufficient_balance' in (o.get('err') or '') for o in outs):
+                print('余额不足，停跑', file=sys.stderr)
+                fh.close()
+                raise SystemExit(3)
             issues = [i for o in outs if o['status'] == 'success' for i in o['issues']]
             payload = {'status': 'success' if issues else 'error',
                        'issues': merge(issues),
@@ -120,6 +137,8 @@ def main():
                    'scope': scope}
             fh.write(json.dumps(rec, ensure_ascii=False) + '\n'); fh.flush()
             errs = ','.join(e for e in payload['branch_errors'] if e)
+            if PACE_SECONDS:
+                time.sleep(PACE_SECONDS)
             print(f"[{i+1:>3}] {name:<7} {lab['sample_id']:<10} {wall:5.2f}s "
                   f"issues={len(payload['issues']):>2} {errs}{' FALLBACK' if fallback else ''}",
                   file=sys.stderr, flush=True)

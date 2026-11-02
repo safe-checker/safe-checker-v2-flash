@@ -1482,6 +1482,57 @@ class JsonRepairTests(unittest.TestCase):
         self.assertEqual(out["iss"][0]["i"], "第一条")
 
 
+class ChecklistScopeTests(unittest.TestCase):
+    """Which checklist the scene path hands to the model.
+
+    The scope was measured on 35 unfamiliar images against the same judge:
+    family subjects won by a wide margin, and adding the scene specific
+    subjects made things worse rather than better.
+    """
+
+    def test_default_scope_is_the_family_checklist(self) -> None:
+        import os
+
+        from safety_check import _build_scene_checklist_section
+
+        original = os.environ.pop("SCENE_CHECKLIST_SCOPE", None)
+        original_group = os.environ.get("CHECKLIST_SUBJECT_GROUP")
+        os.environ["CHECKLIST_SUBJECT_GROUP"] = "0/4"
+        try:
+            section = _build_scene_checklist_section("CONSTRUCTION_HOIST")
+        finally:
+            if original is None:
+                os.environ.pop("SCENE_CHECKLIST_SCOPE", None)
+            else:
+                os.environ["SCENE_CHECKLIST_SCOPE"] = original
+            if original_group is None:
+                os.environ.pop("CHECKLIST_SUBJECT_GROUP", None)
+            else:
+                os.environ["CHECKLIST_SUBJECT_GROUP"] = original_group
+        self.assertIn("主体[", section)
+
+    def test_concise_rows_keep_the_subject_and_its_first_clauses(self) -> None:
+        from safety_check import _concise_subject_row
+
+        row = ("- 主体[立杆落地与底部杆件区域] 甲、乙、丙、丁、戊、己｜违规:第一句；"
+               "第二句；第三句；第四句")
+        out = _concise_subject_row(row)
+        self.assertIn("立杆落地与底部杆件区域", out)
+        self.assertIn("甲", out)
+        self.assertNotIn("戊", out)
+        self.assertIn("第一句", out)
+        self.assertNotIn("第四句", out)
+
+    def test_family_split_covers_every_family_across_the_branches(self) -> None:
+        from safety_check import _family_subject_rows
+
+        branches = [_family_subject_rows(index, 4) for index in range(4)]
+        self.assertTrue(all(branches))
+        # 每一路只拿到自己那个家族，四路并起来才覆盖全部
+        self.assertIn("立杆落地与底部杆件区域", branches[0][0])
+        self.assertNotIn("立杆落地与底部杆件区域", " ".join(branches[1]))
+
+
 class EnvFileLocationTests(unittest.TestCase):
     """The .env lives in the repository root, the script in src/.
 
