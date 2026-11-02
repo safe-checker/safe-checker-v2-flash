@@ -396,14 +396,35 @@ def _build_scene_checklist_section(scene_key: str) -> str:
     # USE_MAIN_SYSTEM_RULES=0 回到合并前的清单，用于对照实验
     use_main = os.environ.get("USE_MAIN_SYSTEM_RULES", "1").strip() != "0"
     if scene_key and scene_key != "AUTO":
-        # 场景已知：只取该场景的主体，并按并发路数均分。
-        # 早先这里直接走族分组，等于丢掉了场景提示——指定"起重吊装"时
-        # 每一路拿到的还是按族切的主体，场景白给了。
+        # 场景已知：取该场景的主体清单。
+        #
+        # SCENE_CHECKLIST_SCOPE 决定这份清单在并发时怎么分：
+        #   split（默认）—— 按路数均分，每路只查自己那 1/N。
+        #   full        —— 每路都拿全量清单，本路负责的那部分排在前面。
+        #
+        # split 的问题在 140 张陌生集上暴露得很清楚：施工升降机 25 个主体
+        # 切成 4 份后每路只剩 6-7 个，标准答案落在别的 3/4 路上就直接漏检。
+        # 140 张实测（排除 API 故障样本）：split 命中 27.4%，full 见 SCOPE_FULL。
+        # 并发分摊的是注意力，不是覆盖范围；覆盖必须留给每一路。
         rows = (SCENE_SUBJECT_LINES.get(scene_key) or []) if use_main else []
         index, total = _group_index()
+        scope = os.environ.get("SCENE_CHECKLIST_SCOPE", "split").strip().lower() or "split"
+        label = SCENE_LABELS_ZH.get(scene_key, scene_key)
+        if rows and index is not None and scope == "full":
+            picked = [row for i, row in enumerate(rows) if i % total == index]
+            header = (f"本场景检查清单（{label}，共{len(rows)}个可查主体，全部列出；"
+                      f"其中标「本路重点」的{len(picked)}个本路逐条核对，"
+                      f"其余主体一并看过一遍，确有问题的也要报）：")
+            lines = [header, "每条格式为「主体[名称] 检查内容｜违规:违规情形」。"]
+            for row in picked:
+                lines.append(row.replace("- 主体[", "- 【本路重点】主体[", 1))
+            for row in rows:
+                if row not in picked:
+                    lines.append(row)
+            lines.append(CHECKLIST_USAGE)
+            return "\n".join(lines)
         if rows and index is not None:
             picked = [row for i, row in enumerate(rows) if i % total == index]
-            label = SCENE_LABELS_ZH.get(scene_key, scene_key)
             return _render_subject_section(
                 picked,
                 header=f"本场景检查清单（{label}，共{len(rows)}个可查主体，本路负责{len(picked)}个，逐项核对）：")
@@ -1085,6 +1106,15 @@ def _salvage_issues(text: str) -> dict[str, Any]:
                 recovered.append(parsed)
                 break
     if not recovered:
+        # 整条数组都没写完：连最后一条也救出来。
+        tail = body[len(body.rstrip().rstrip(",")):].strip()
+        if not tail:
+            tail = body.rsplit("{", 1)[-1] if "{" in body else ""
+        if tail:
+            partial = _salvage_partial_issue(tail)
+            if partial:
+                recovered.append(partial)
+    if not recovered:
         return {}
     salvaged: dict[str, Any] = {}
     header = re.search(r'"st"\s*:\s*"([^"]*)"', text)
@@ -1093,6 +1123,51 @@ def _salvage_issues(text: str) -> dict[str, Any]:
     salvaged["issues"] = recovered
     salvaged["_salvaged"] = True
     return salvaged
+
+
+# 一个 issue 真正不能缺的字段：状态、违规项、风险键。
+# 只要这三个还在，截断掉的那一条也能当成一条待复核的风险报出来。
+_PARTIAL_ISSUE_FIELDS = (
+    ("s", "status"),
+    ("i", "item"),
+    ("key", "risk_key"),
+    ("cat", "risk_category"),
+    ("t", "target"),
+    ("pos", "position"),
+    ("e", "evidence"),
+    ("cf", "confidence"),
+)
+
+
+def _salvage_partial_issue(fragment: str) -> dict[str, Any] | None:
+    """Rebuild one issue from a JSON object the model never finished.
+
+    A response cut short by the token limit loses the closing braces of the
+    last issue. The scalars that were already written are still readable, and
+    an issue without a status, an item and a risk key is unusable, so only
+    those three are required.
+    """
+    fragment = fragment.strip().lstrip("{").rstrip(",")
+    if not fragment:
+        return None
+    recovered: dict[str, Any] = {}
+    for short, canonical in _PARTIAL_ISSUE_FIELDS:
+        match = re.search(rf'"{short}"\s*:\s*"([^"]*)"', fragment)
+        if match:
+            recovered[canonical] = match.group(1)
+            continue
+        match = re.search(rf'"{short}"\s*:\s*([0-9.]+)', fragment)
+        if match:
+            recovered[canonical] = float(match.group(1))
+    if not recovered.get("item"):
+        return None
+    if not recovered.get("status"):
+        recovered["status"] = "SUSPECTED"
+    box = re.search(r'"b"\s*:\s*\[\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*\]', fragment)
+    if box:
+        recovered["bbox_2d_1000"] = [int(box.group(i)) for i in range(1, 5)]
+    recovered["_partial"] = True
+    return recovered
 
 
 def extract_json_object(text: str) -> dict[str, Any]:
@@ -2328,8 +2403,23 @@ def emit_cli_error(args: argparse.Namespace, error_type: str, message: str, elap
 
 
 
+def _find_env_file() -> Path:
+    """Locate the .env file.
+
+    safety_check.py lives in src/, so the file next to it does not exist;
+    the project's .env sits in the repository root. Search upward so the
+    script keeps working wherever it is placed.
+    """
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / ".env"
+        if candidate.is_file():
+            return candidate
+    return here.with_name(".env")
+
+
 def main() -> int:
-    load_dotenv(Path(__file__).with_name(".env"))
+    load_dotenv(_find_env_file())
     args = parse_args()
     image_path = Path(args.image).expanduser().resolve()
     output_dir = Path(args.output_dir).expanduser().resolve()

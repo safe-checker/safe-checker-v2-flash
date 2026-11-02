@@ -1119,6 +1119,47 @@ class SceneFamilyChecklistTests(unittest.TestCase):
         for line in scoped:
             self.assertTrue(any(word in line for word in ("悬挑式", "扣件式", "盘扣式", "附着升降式")))
 
+    def test_split_scope_hides_most_of_the_scene_from_one_branch(self) -> None:
+        from catalogs.scene_checklists import SCENE_SUBJECT_LINES
+
+        """Splitting the scene across branches must not be the default way to lose coverage.
+
+        A scene with many subjects ends up with only a handful per branch, and a
+        defect that belongs to another branch is missed outright.
+        """
+        import os
+
+        from safety_check import _build_scene_checklist_section
+
+        scene = "CONSTRUCTION_HOIST"
+        rows = SCENE_SUBJECT_LINES[scene]
+        self.assertGreater(len(rows), 8)
+
+        original = os.environ.get("CHECKLIST_SUBJECT_GROUP")
+        os.environ["CHECKLIST_SUBJECT_GROUP"] = "0/4"
+        try:
+            os.environ["SCENE_CHECKLIST_SCOPE"] = "split"
+            split = _build_scene_checklist_section(scene)
+            os.environ["SCENE_CHECKLIST_SCOPE"] = "full"
+            full = _build_scene_checklist_section(scene)
+        finally:
+            os.environ.pop("SCENE_CHECKLIST_SCOPE", None)
+            if original is None:
+                os.environ.pop("CHECKLIST_SUBJECT_GROUP", None)
+            else:
+                os.environ["CHECKLIST_SUBJECT_GROUP"] = original
+
+        def row_count(text: str) -> int:
+            return sum(1 for line in text.splitlines()
+                       if line.startswith("- ") and "主体[" in line)
+
+        subjects_in_split = row_count(split)
+        subjects_in_full = row_count(full)
+        self.assertLess(subjects_in_split, subjects_in_full)
+        self.assertEqual(subjects_in_full, len(rows))
+        # 本路负责的主体排在前面并标出来，模型先看自己那部分
+        self.assertIn("本路重点", full)
+
     def test_family_core_skips_dimensions_the_person_protocol_already_covers(self) -> None:
         from catalogs.scene_checklists import GLOBAL_DIMENSIONS, SCENE_FAMILY_CHECKLISTS
 
@@ -1407,6 +1448,30 @@ class JsonRepairTests(unittest.TestCase):
         self.assertEqual(out["st"], "X")
         self.assertEqual(len(out["iss"]), 1)
 
+    def test_issue_cut_inside_the_first_object_is_still_reported(self) -> None:
+        """A response cut by the token limit may leave the first issue unfinished.
+
+        The model writes the status and the item before it runs out of room, so
+        that risk is still usable and must not be dropped.
+        """
+        truncated = (
+            '{"st":"WORK_AT_HEIGHT","iss":[{"s":"CLEAR","i":"楼板洞口临边无防护栏杆",'
+            '"cat":"WORK_AT_HEIGHT","key":"OPENING_EDGE_UNPROTECTED","cf":0.7'
+        )
+        out = extract_json_object(truncated)
+        self.assertEqual(len(out["iss"]), 1)
+        self.assertEqual(out["iss"][0]["i"], "楼板洞口临边无防护栏杆")
+        self.assertEqual(out["iss"][0]["s"], "CLEAR")
+
+    def test_partial_issue_keeps_the_bbox_when_it_was_written(self) -> None:
+        truncated = (
+            '{"iss":[{"s":"SUSPECTED","i":"电缆沿地面明设","key":"CABLE_GROUND_LAY",'
+            '"b":[10,20,300,400],"cf":0.6,"tv":"comp'
+        )
+        out = extract_json_object(truncated)
+        self.assertEqual(len(out["iss"]), 1)
+        self.assertEqual(out["iss"][0]["b"], [10, 20, 300, 400])
+
     def test_salvaged_issues_keep_sibling_objects(self) -> None:
         damaged = (
             '{"iss":[{"s":"CLEAR","i":"第一条","b":[1,2,3,4]},'
@@ -1415,6 +1480,24 @@ class JsonRepairTests(unittest.TestCase):
         out = extract_json_object(damaged)
         self.assertEqual(len(out["iss"]), 2)
         self.assertEqual(out["iss"][0]["i"], "第一条")
+
+
+class EnvFileLocationTests(unittest.TestCase):
+    """The .env lives in the repository root, the script in src/.
+
+    Reading the file next to the script found nothing after the tree was
+    reorganised, and every standalone run then failed with a missing API key.
+    """
+
+    def test_env_file_is_found_in_the_repository_root(self) -> None:
+        from pathlib import Path
+
+        from safety_check import _find_env_file
+
+        found = _find_env_file()
+        self.assertTrue(found.is_file(), f".env not found at {found}")
+        self.assertEqual(found.name, ".env")
+        self.assertEqual(found.parent.name, "deepseek_flash_safety_checker")
 
 
 class ModelRetryTests(unittest.TestCase):
