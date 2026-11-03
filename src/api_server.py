@@ -37,8 +37,11 @@ load_dotenv(REPO_DIR / ".env")
 MAX_UPLOAD_BYTES = int(os.getenv("API_MAX_UPLOAD_BYTES", str(12 * 1024 * 1024)))
 # 检测器自己的检测预算；进程硬杀要比它宽松，才能拿到结构化超时错误
 INSPECTION_BUDGET_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "8"))
-# 一次请求内部并发几路检查。1 = 不并发；2 和 4 的准确率实测相同，2 更稳。
-BRANCHES = int(os.getenv("API_BRANCHES", "2"))
+# 一次请求内部并发几路检查。1 = 不并发。
+# 70 张陌生集实测：4 路命中 67.1%、2 路 62.9%（只看两臂都出结果的 68 张是 66% vs 65%）。
+# 4 路还多一个便宜的地方：同一场景同一路的系统提示词完全相同，调用越多缓存命中越高
+# （4 路 95.4% vs 2 路 86.6%），单次调用反而更便宜。
+BRANCHES = int(os.getenv("API_BRANCHES", "4"))
 PROCESS_TIMEOUT_SECONDS = float(
     os.getenv("API_PROCESS_TIMEOUT_SECONDS", str(INSPECTION_BUDGET_SECONDS + 1.5))
 )
@@ -182,8 +185,7 @@ async def inspect_image(
                 command.extend(["--prompt", prompt.strip()])
             if detail_crop.strip():
                 command.extend(["--detail-crop", detail_crop.strip()])
-            # 并发分支数：2 路和 4 路准确率相同（同图配对 64% vs 64%），
-            # 2 路的上游压力只有一半，所以默认 2；视频端要更稳可以配 4。
+            # 并发分支数：四路家族分组，覆盖全部且每路清单更专注。
             if BRANCHES > 1:
                 command.extend(["--branches", str(BRANCHES)])
 

@@ -68,7 +68,9 @@ Codex 在本目录启动时会自动读这份文件。
 - 硬时限：`asyncio.wait_for` 套在每个分支上。httpx 的 read 超时是"每次读"不是"总共"，
   慢而稳的响应能拖到 24 秒。**别把这层去掉**。
 - 分支级错误隔离：一路挂了不影响其它路。错误类型分开记。
-- `API_BRANCHES` 决定 HTTP API 默认几路（默认 2）。
+- `API_BRANCHES` 决定 HTTP API 默认几路（**默认 4**，70 张实测 67.1%、空输出 0、超预算 0）。
+- `.env` 的 `REQUEST_TIMEOUT_SECONDS=9`、`DEEPSEEK_VISION_TIMEOUT_SECONDS=8.4`、
+  `API_PROCESS_TIMEOUT_SECONDS=13`（进程硬杀要比检测预算宽松，才能拿到结构化错误）。
 
 ## 已知问题（2026-11-02）
 
