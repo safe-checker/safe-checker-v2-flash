@@ -37,6 +37,8 @@ load_dotenv(REPO_DIR / ".env")
 MAX_UPLOAD_BYTES = int(os.getenv("API_MAX_UPLOAD_BYTES", str(12 * 1024 * 1024)))
 # 检测器自己的检测预算；进程硬杀要比它宽松，才能拿到结构化超时错误
 INSPECTION_BUDGET_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "8"))
+# 一次请求内部并发几路检查。1 = 不并发；2 和 4 的准确率实测相同，2 更稳。
+BRANCHES = int(os.getenv("API_BRANCHES", "2"))
 PROCESS_TIMEOUT_SECONDS = float(
     os.getenv("API_PROCESS_TIMEOUT_SECONDS", str(INSPECTION_BUDGET_SECONDS + 1.5))
 )
@@ -105,31 +107,6 @@ app = FastAPI(
     version="1.0.0",
     description="Upload a construction-site image and receive a structured single-call DeepSeek Flash safety inspection with original-image bounding boxes.",
 )
-
-
-def _process_failure(completed: subprocess.CompletedProcess[str], result: Any) -> HTTPException:
-    error = result.get("error") if isinstance(result, dict) else None
-    if isinstance(error, dict):
-        message = error.get("message")
-        if isinstance(message, str) and message.strip():
-            error_type = error.get("type")
-            logger.warning("Inspection failed: returncode=%s error_type=%s", completed.returncode, error_type)
-            return HTTPException(
-                status_code=504 if error_type == "timeout" else 502,
-                detail=message.strip()[-2000:],
-            )
-    if completed.returncode < 0:
-        number = -completed.returncode
-        try:
-            name = signal.Signals(number).name
-        except ValueError:
-            name = str(number)
-        message = f"Inspection process was terminated by signal {name} ({number}). Check the service and system logs."
-    else:
-        diagnostic = completed.stderr.strip() or completed.stdout.strip() or "No error details were returned."
-        message = f"Inspection process failed (exit code {completed.returncode}): {diagnostic[-1800:]}"
-    logger.warning("Inspection process failed: returncode=%s", completed.returncode)
-    return HTTPException(status_code=502, detail=message)
 
 
 @app.get("/health")
@@ -205,6 +182,10 @@ async def inspect_image(
                 command.extend(["--prompt", prompt.strip()])
             if detail_crop.strip():
                 command.extend(["--detail-crop", detail_crop.strip()])
+            # 并发分支数：2 路和 4 路准确率相同（同图配对 64% vs 64%），
+            # 2 路的上游压力只有一半，所以默认 2；视频端要更稳可以配 4。
+            if BRANCHES > 1:
+                command.extend(["--branches", str(BRANCHES)])
 
             child_env = {
                 **os.environ,

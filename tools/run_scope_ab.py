@@ -23,7 +23,8 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent.parent
 PY_BIN = str(BASE / '.venv' / 'bin' / 'python')
 CHECKER = str(BASE)
-SET = Path(os.environ.get('EVAL_SET', '/tmp/safety_eval/图片集_140张'))
+SET = Path(os.environ.get('EVAL_SET',
+                    '/Users/gjz/Documents/ChatGPT/复杂环境安全巡检/评测数据/施工安全图集_140张'))
 
 ARMS = {
     'split1':  dict(scope='split',  groups=1),
@@ -92,12 +93,20 @@ def main():
                 r = json.loads(line); done.add((r['sample_id'], r['version']))
     fh = path.open('a', encoding='utf-8')
     labels = [json.loads(l) for l in (SET / 'labels.jsonl').read_text(encoding='utf-8').splitlines() if l.strip()]
-    picked, counts = [], {}
+    # 分层等距抽样：每个场景按间隔取，而不是取前 N 张。
+    # 前 N 张会整段落在同一批子目录上（例如施工用电只取到"用电01-20"，
+    # "补电"那十张一张都进不来），样本有偏，等距取才覆盖得住场景里的各种情况。
+    picked = []
+    by_scene: dict[str, list] = {}
     for lab in labels:
-        sc = lab['test_scene']
-        counts[sc] = counts.get(sc, 0)
-        if counts[sc] < per_scene:
-            counts[sc] += 1; picked.append(lab)
+        by_scene.setdefault(lab['test_scene'], []).append(lab)
+    for scene, items in by_scene.items():
+        if per_scene >= len(items):
+            picked.extend(items)
+            continue
+        stride = len(items) / per_scene
+        for i in range(per_scene):
+            picked.append(items[int(i * stride)])
     arms = len(WANTED) if WANTED else len(ARMS)
     print(f'取样 {len(picked)} 张（每场景 {per_scene} 张），共 {len(picked)*arms} 组', file=sys.stderr)
     for i, lab in enumerate(picked):
@@ -129,6 +138,7 @@ def main():
                        'model_detected_scene': '',
                        'branch_status': [o['status'] for o in outs],
                        'branch_errors': [o.get('err') or '' for o in outs],
+                       'branch_messages': [o.get('msg') or '' for o in outs],
                        'branch_wall': [o['wall'] for o in outs],
                        'usage': {k: sum(int(o.get('usage', {}).get(k) or 0) for o in outs)
                                  for k in ('prompt_tokens', 'completion_tokens',

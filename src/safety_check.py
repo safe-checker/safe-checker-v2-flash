@@ -476,26 +476,21 @@ def _concise_subject_row(row: str, max_dimensions: int = 4, max_clauses: int = 3
 
 def _family_subject_rows(index: int, total: int) -> list[str]:
     """The subject rows of one branch when the work is split by family."""
-    if total <= 1:
-        # 单路就是全部家族，不能只落一个家族
-        rows = [
-            row for group in SUBJECT_CHECKLIST
-            for row in [next((line for line in SUBJECT_CHECKLIST_LINES
-                              if line.startswith(f"- 主体[{group['subject']}]")), None)]
-            if row
-        ]
-        if os.environ.get("CONCISE_SUBJECTS", "1").strip() != "0":
-            rows = [_concise_subject_row(row) for row in rows]
-        return rows
-    groups = SUBJECT_GROUP_FAMILIES[:total]
-    if total < len(SUBJECT_GROUP_FAMILIES):
-        head = groups[:-1]
-        tail = groups[-1]
-        merged: set[str] = set()
-        for _, families in groups[total - 1:]:
-            merged |= set(families)
-        groups = head + [(tail[0], tuple(sorted(merged)))]
-    wanted = set(groups[index][1])
+    # 家族按命名组切分，路数少就把相邻的组合并。
+    # 四路是原来的分法：脚手架 / 起重与升降 / 临时用电 / 基坑·高处·综合。
+    # 两路时是 脚手架+起重 与 临电+基坑·高处·综合，**覆盖范围一点没少**，
+    # 只是每路的清单长一点、并发压力小一半。
+    buckets = {
+        1: [[0, 1, 2, 3]],
+        2: [[0, 1], [2, 3]],
+        3: [[0], [1], [2, 3]],
+        4: [[0], [1], [2], [3]],
+    }.get(total, [[0, 1, 2, 3]])
+    if index >= len(buckets):
+        index = len(buckets) - 1
+    wanted: set[str] = set()
+    for position in buckets[index]:
+        wanted |= set(SUBJECT_GROUP_FAMILIES[position][1])
     # 只用规则包那 62 个主体。主系统那 268 个和反向生成的 25 个条目又长又细，
     # 同一分组下清单会从 2.6k 字涨到 20k 字，提示词直接撑爆八秒。
     only_rule_pack = os.environ.get("RULE_PACK_ONLY", "1").strip() != "0"
@@ -2431,6 +2426,117 @@ def is_transient_model_error(exc: BaseException) -> bool:
     return False
 
 
+async def call_deepseek_many(
+    payloads: list[dict[str, Any]],
+    api_key: str,
+    base_url: str,
+    timeout_seconds: float,
+    max_attempts: int | None = None,
+    retry_min_budget: float | None = None,
+) -> list[tuple[str, int, dict[str, int]]]:
+    """Send several requests at once over one connection pool.
+
+    Four branches used to run as four separate processes. Each one started its
+    own interpreter, loaded the whole catalogue and opened its own TLS session,
+    and four handshakes at the same time made the connect phase time out. One
+    process with one client keeps the session warm and removes that failure
+    mode, and the branches still overlap, so the wall clock stays the time of
+    the slowest branch rather than the sum.
+    """
+    if max_attempts is None:
+        max_attempts = env_int("MODEL_MAX_ATTEMPTS", 3)
+    if retry_min_budget is None:
+        retry_min_budget = env_float("MODEL_RETRY_MIN_BUDGET", 1.0)
+    max_attempts = max(1, int(max_attempts))
+    connect_cap = env_float("MODEL_CONNECT_TIMEOUT", 6.0)
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    timeout = httpx.Timeout(timeout_seconds, connect=max(0.3, min(connect_cap, timeout_seconds)))
+
+    async def one(payload: dict[str, Any]) -> tuple[str, int, dict[str, int]]:
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        attempts = 0
+        last_error: BaseException | None = None
+        while True:
+            attempts += 1
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ModelBudgetExhausted(
+                    "DeepSeek request exhausted its total time budget."
+                ) from last_error
+            try:
+                # httpx 的 read 超时是"每次读"，不是"总共"：
+                # 服务端慢而稳地回数据时，总耗时可以无限拉长（实测到过 24 秒）。
+                # 所以这里必须再套一层硬总时限，八秒的预算才是真的。
+                response = await asyncio.wait_for(
+                    client.post(url=base_url, headers=headers, json=payload),
+                    timeout=remaining,
+                )
+                response.raise_for_status()
+                data = response.json()
+                break
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                if status in {402, 429}:
+                    raise ModelQuotaError(
+                        f"DeepSeek rejected the request with HTTP {status}: "
+                        f"{exc.response.text[:160]}"
+                    ) from exc
+                if not is_transient_model_error(exc):
+                    raise
+                last_error = exc
+            except Exception as exc:  # noqa: BLE001 - classified right below
+                if not is_transient_model_error(exc):
+                    raise
+                last_error = exc
+            leftover = deadline - time.monotonic()
+            if attempts >= max_attempts or leftover < retry_min_budget:
+                raise ModelNetworkError(
+                    f"DeepSeek request failed with a transient error after {attempts} attempt(s): "
+                    f"{type(last_error).__name__}: {last_error}"
+                ) from last_error
+            await asyncio.sleep(min(0.2 * attempts, max(0.0, leftover - retry_min_budget)))
+
+        usage = data.get("usage") or {}
+        token_usage = {
+            "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+            "completion_tokens": int(usage.get("completion_tokens") or 0),
+            "cache_hit_tokens": int(usage.get("prompt_cache_hit_tokens") or 0),
+            "cache_miss_tokens": int(usage.get("prompt_cache_miss_tokens") or 0),
+        }
+        try:
+            choice = data["choices"][0]
+            message = choice["message"]
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                return content.strip(), attempts, token_usage
+            finish_reason = choice.get("finish_reason", "unknown")
+            if message.get("reasoning_content"):
+                raise RuntimeError(
+                    "模型返回了思考内容，但没有返回最终检测报告。"
+                    f"finish_reason={finish_reason}。"
+                    "请增大 MAX_TOKENS，或将 REASONING_EFFORT 改为 low。"
+                )
+            raise RuntimeError(
+                "模型返回的最终检测报告为空。"
+                f"finish_reason={finish_reason}。请检查模型名称和思考参数。"
+            )
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError(f"Unexpected API response: {data}") from exc
+
+    async def guarded(payload: dict[str, Any]) -> tuple[str, int, dict[str, int]] | BaseException:
+        # 一路失败不能拖垮整张图：别的路可能已经拿到结果了。
+        try:
+            return await one(payload)
+        except BaseException as exc:  # noqa: BLE001 - reported per branch
+            return exc
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        return list(await asyncio.gather(*(guarded(payload) for payload in payloads)))
+
+
 def call_deepseek(
     payload: dict[str, Any],
     api_key: str,
@@ -2457,7 +2563,7 @@ def call_deepseek(
     max_attempts = max(1, int(max_attempts))
     deadline = time.monotonic() + max(0.0, timeout_seconds)
 
-    connect_cap = env_float("MODEL_CONNECT_TIMEOUT", 2.0)
+    connect_cap = env_float("MODEL_CONNECT_TIMEOUT", 6.0)
 
     async def request(budget: float) -> dict[str, Any]:
         # 连接阶段失败（DNS 解析、拒绝连接）要尽快暴露，才有机会用剩余预算重试
@@ -2593,6 +2699,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="Validate image preprocessing and config without calling the API.")
     parser.add_argument("--show-timing", action="store_true", help="Print preprocessing, model, parsing, coordinate conversion, and report timing.")
     parser.add_argument(
+        "--branches",
+        type=int,
+        default=1,
+        help="并发分几路检查同一张图（1~8）。多路在同一个进程里并发，共享一条 HTTP 连接，"
+             "墙钟取最慢的一路；结果按置信度合并去重。",
+    )
+    parser.add_argument(
         "--detail-crop",
         default="",
         help=(
@@ -2650,9 +2763,211 @@ def _find_env_file() -> Path:
     return here.with_name(".env")
 
 
+def _merge_branch_issues(branch_payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge the issues several branches reported about the same image.
+
+    Two branches often describe the same risk in different words, so the merge
+    keeps the higher confidence of a near duplicate pair.
+    """
+    import difflib
+
+    merged: list[dict[str, Any]] = []
+    for payload in branch_payloads:
+        for issue in payload.get("issues") or []:
+            if not isinstance(issue, dict):
+                continue
+            key = "".join(ch for ch in str(issue.get("item") or "") if ch.isalnum())
+            duplicate = None
+            for kept in merged:
+                other = "".join(ch for ch in str(kept.get("item") or "") if ch.isalnum())
+                if difflib.SequenceMatcher(None, key, other).ratio() >= 0.78:
+                    duplicate = kept
+                    break
+            if duplicate is None:
+                merged.append(issue)
+            elif float(issue.get("confidence") or 0) > float(duplicate.get("confidence") or 0):
+                duplicate.update(issue)
+    order = {"CLEAR": 0, "SUSPECTED": 1, "NOT_ASSESSABLE": 2}
+    merged.sort(key=lambda item: (order.get(str(item.get("status")).upper(), 3),
+                                 -float(item.get("confidence") or 0)))
+    return merged[:8]
+
+
+def run_branches(args: argparse.Namespace, image_path: Path) -> int:
+    """Check one image with several checklist branches at the same time.
+
+    The branches share this process, the image preprocessing and one HTTP
+    connection, so four of them cost about as much wall clock as one and do
+    not fight each other over the handshake.
+    """
+    started = time.perf_counter()
+    groups = max(1, min(int(args.branches), 8))
+    scene_override = args.scene.strip() or None
+    requested_scene = normalize_scene(args.scene)
+    model = os.getenv("DEEPSEEK_MODEL", "deepseek-flash").strip()
+    base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/chat/completions").strip()
+    timeout_seconds = env_float("REQUEST_TIMEOUT_SECONDS", 8.0)
+    max_edge = env_int("MAX_IMAGE_EDGE", 768)
+    jpeg_quality = env_int("JPEG_QUALITY", 70)
+    image_detail = os.getenv("IMAGE_DETAIL", "low").strip()
+    max_tokens = env_int("SINGLE_MODEL_MAX_TOKENS", env_int("MAX_TOKENS", 2200))
+    temperature = env_float("TEMPERATURE", 0.0)
+    reasoning_effort = os.getenv("REASONING_EFFORT", "none").strip().lower()
+    compact_output = os.getenv("OUTPUT_MODE", "compact").strip().lower() != "full"
+
+    api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+    if not api_key or api_key.startswith("sk-你的"):
+        emit_cli_error(args, "missing_api_key", "Please set DEEPSEEK_API_KEY in .env first.")
+        return 2
+
+    with Image.open(image_path) as source:
+        image = ImageOps.exif_transpose(source).convert("RGB")
+        image_size = image.size
+        local_quality = analyze_pil_image_quality(image)
+        image_data_url = image_to_data_url(image, max_edge=max_edge, quality=jpeg_quality)
+
+    payloads: list[dict[str, Any]] = []
+    prompts: list[str] = []
+    previous_group = os.environ.get("CHECKLIST_SUBJECT_GROUP")
+    try:
+        for group in range(groups):
+            os.environ["CHECKLIST_SUBJECT_GROUP"] = f"{group}/{groups}"
+            prompt = build_single_vision_system_prompt(requested_scene, compact=compact_output)
+            prompts.append(prompt)
+            user_text = "\n".join(
+                [
+                    f"用户指定场景：{scene_override}" if scene_override else "",
+                    f"原图显示尺寸：宽{image_size[0]}像素，高{image_size[1]}像素。",
+                    f"图像质量提示：{local_quality.get('note', '图片质量基本可用')}。",
+                    f"检测要求：{args.prompt.strip() or DEFAULT_PROMPT}",
+                    "坐标必须按整张原图归一化到0-1000后输出，禁止按压缩输入图的像素坐标输出。",
+                ]
+            )
+            payloads.append(build_vision_payload(
+                image_data_url=image_data_url,
+                system_prompt=prompt,
+                user_text=user_text,
+                model=model,
+                image_detail=image_detail,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                reasoning_effort=reasoning_effort,
+            ))
+    finally:
+        if previous_group is None:
+            os.environ.pop("CHECKLIST_SUBJECT_GROUP", None)
+        else:
+            os.environ["CHECKLIST_SUBJECT_GROUP"] = previous_group
+
+    model_timeout = env_float("DEEPSEEK_VISION_TIMEOUT_SECONDS",
+                              max(1.0, timeout_seconds - 0.55))
+    elapsed_before = time.perf_counter() - started
+    model_timeout = min(model_timeout, max(1.0, timeout_seconds - elapsed_before - 0.35))
+    call_started = time.perf_counter()
+    try:
+        results = asyncio.run(call_deepseek_many(
+            payloads,
+            api_key=api_key,
+            base_url=base_url,
+            timeout_seconds=model_timeout,
+        ))
+    except Exception as exc:  # noqa: BLE001 - one failure must not lose the other branches
+        emit_cli_error(args, "processing_error", str(exc), time.perf_counter() - started)
+        return 1
+    model_elapsed = time.perf_counter() - call_started
+
+    branch_payloads: list[dict[str, Any]] = []
+    branch_status: list[str] = []
+    token_usage = {"prompt_tokens": 0, "completion_tokens": 0,
+                   "cache_hit_tokens": 0, "cache_miss_tokens": 0}
+    branch_messages: list[str] = []
+    for result, prompt in zip(results, prompts):
+        if isinstance(result, BaseException):
+            name = type(result).__name__
+            message = str(result)[:200]
+            if isinstance(result, ModelQuotaError):
+                branch_status.append("insufficient_balance")
+            elif isinstance(result, (httpx.TimeoutException, ModelBudgetExhausted,
+                                     asyncio.TimeoutError)):
+                # asyncio.wait_for 超时会抛 asyncio.TimeoutError，
+                # 它的 str() 是空的，漏掉的话错误类型就成了 processing_error。
+                branch_status.append("timeout")
+                message = message or (
+                    f"分支超出 {timeout_seconds:.1f} 秒总预算，被硬时限切断。"
+                )
+            elif isinstance(result, ModelNetworkError):
+                branch_status.append("network_error")
+            else:
+                branch_status.append("processing_error")
+                message = message or f"{type(result).__name__}: {result!r}"[:200]
+            branch_messages.append(message)
+            branch_payloads.append({"error": message})
+            continue
+        raw, _attempts, usage = result
+        for key in token_usage:
+            token_usage[key] += int(usage.get(key) or 0)
+        try:
+            parsed = extract_json_object(raw)
+        except ValueError as exc:
+            branch_status.append("error")
+            branch_messages.append(str(exc)[:200])
+            branch_payloads.append({"error": str(exc)[:200]})
+            continue
+        if compact_output:
+            parsed = expand_compact_result(parsed)
+        detected = normalize_fact_result(parsed, scene_override=scene_override,
+                                         original_size=image_size)
+        detected["image_quality"] = local_quality
+        detected["image_detail"] = image_detail
+        detected["image_width"] = image_size[0]
+        detected["image_height"] = image_size[1]
+        branch_status.append("success")
+        branch_payloads.append(detected)
+
+    merged = _merge_branch_issues(branch_payloads)
+    ok = [payload for payload in branch_payloads if payload.get("issues") is not None
+          and "error" not in payload]
+    detected = dict(ok[0]) if ok else {}
+    detected["issues"] = merged
+    detected.setdefault("scene_type", requested_scene if requested_scene != "AUTO" else "GENERAL_SITE")
+    elapsed = time.perf_counter() - started
+    report = model_judged_report(
+        detected,
+        local_quality,
+        elapsed=elapsed,
+        scene=detected.get("scene_type"),
+        prompt=args.prompt,
+    )
+    result = {
+        "status": "success" if merged else "error",
+        "format_version": "1.3",
+        "output_format": "structured_json",
+        "branches": groups,
+        "branch_status": branch_status,
+        "branch_messages": branch_messages,
+        "issues": merged,
+        "scene": detected.get("scene"),
+        "model_detected_scene": detected.get("scene_type"),
+        "image": {"path": str(image_path), "width": image_size[0], "height": image_size[1]},
+        "timings": {
+            "deepseek_vision": round(model_elapsed, 4),
+            "total": round(elapsed, 4),
+            "token_usage": token_usage,
+        },
+        "report": report,
+    }
+    if args.json_output:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print(report)
+    return 0 if merged else 1
+
+
 def main() -> int:
     load_dotenv(_find_env_file())
     args = parse_args()
+    if int(args.branches) > 1:
+        return run_branches(args, Path(args.image).expanduser().resolve())
     image_path = Path(args.image).expanduser().resolve()
     output_dir = Path(args.output_dir).expanduser().resolve()
     requested_scene = normalize_scene(args.scene)
