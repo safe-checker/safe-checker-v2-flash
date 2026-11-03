@@ -1533,6 +1533,74 @@ class ChecklistScopeTests(unittest.TestCase):
         self.assertNotIn("立杆落地与底部杆件区域", " ".join(branches[1]))
 
 
+class PartChecklistTests(unittest.TestCase):
+    """The part level checklist speaks the same language as the labels.
+
+    The rule pack and the main system catalogue are written at two other
+    levels: the rule pack has a handful of items per scene, and the main
+    system's trigger subjects ask whether a piece of equipment is configured
+    correctly. Inspection checklists ask a third question, about one concrete
+    part and one defect, which is what the labels use.
+    """
+
+    def test_every_scene_has_part_items_and_no_duplicates(self) -> None:
+        from catalogs.part_checklist import SCENE_PART_LINES
+
+        self.assertGreaterEqual(len(SCENE_PART_LINES), 7)
+        for scene, rows in SCENE_PART_LINES.items():
+            self.assertGreater(len(rows), 5, scene)
+            self.assertEqual(len(rows), len(set(rows)), scene)
+
+    def test_part_items_name_a_part_and_a_check(self) -> None:
+        from catalogs.part_checklist import SCENE_PART_LINES
+
+        for scene, rows in SCENE_PART_LINES.items():
+            for row in rows:
+                self.assertTrue(row.startswith("- "), row)
+                self.assertIn("：", row, row)
+
+    def test_generator_is_reproducible(self) -> None:
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        base = Path(__file__).resolve().parent.parent
+        target = base / "src" / "catalogs" / "part_checklist.py"
+        before = target.read_bytes()
+        try:
+            subprocess.run([sys.executable, str(base / "tools" / "build_part_checklist.py")],
+                           cwd=base, check=True, capture_output=True)
+            self.assertEqual(target.read_bytes(), before)
+        finally:
+            target.write_bytes(before)
+
+    def test_part_scope_adds_items_without_blowing_up_the_prompt(self) -> None:
+        import os
+
+        from safety_check import _build_scene_checklist_section
+
+        original_scope = os.environ.get("SCENE_CHECKLIST_SCOPE")
+        original_group = os.environ.get("CHECKLIST_SUBJECT_GROUP")
+        os.environ["CHECKLIST_SUBJECT_GROUP"] = "0/4"
+        try:
+            os.environ["SCENE_CHECKLIST_SCOPE"] = "family"
+            plain = _build_scene_checklist_section("CONSTRUCTION_HOIST")
+            os.environ["SCENE_CHECKLIST_SCOPE"] = "family_parts"
+            with_parts = _build_scene_checklist_section("CONSTRUCTION_HOIST")
+        finally:
+            if original_scope is None:
+                os.environ.pop("SCENE_CHECKLIST_SCOPE", None)
+            else:
+                os.environ["SCENE_CHECKLIST_SCOPE"] = original_scope
+            if original_group is None:
+                os.environ.pop("CHECKLIST_SUBJECT_GROUP", None)
+            else:
+                os.environ["CHECKLIST_SUBJECT_GROUP"] = original_group
+        self.assertIn("本场景部件细项", with_parts)
+        # 细项按路分摊，每路只多一点点，注意力不会被稀释
+        self.assertLess(len(with_parts) - len(plain), 1200)
+
+
 class EnvFileLocationTests(unittest.TestCase):
     """The .env lives in the repository root, the script in src/.
 

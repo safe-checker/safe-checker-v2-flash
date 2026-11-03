@@ -42,6 +42,7 @@ try:  # 生成规则是可选扩展，索引文件缺失时照常运行
 except ImportError:  # pragma: no cover
     GENERATED_BY_SCENE, GENERATED_BY_SUBJECT = {}, {}
 
+from catalogs.part_checklist import SCENE_PART_LINES
 from catalogs.scene_checklists import (
     AUTO_CORE_DIMENSIONS,
     FAMILY_CORE_DIMENSIONS,
@@ -580,6 +581,25 @@ def _build_scene_checklist_section(scene_key: str) -> str:
         if scope == "hybrid":
             index, total = _group_index()
             return _hybrid_checklist(scene_key, index, total)
+        if scope == "family_parts" and scene_key not in SCENE_FAMILY_CHECKLISTS:
+            index, total = _group_index()
+            if index is None:
+                index, total = 0, 1
+            label = SCENE_LABELS_ZH.get(scene_key, scene_key)
+            lines = [f"本场景检查清单（{label}）：先按家族逐项核对，再逐项核对下面的部件细项。"]
+            lines.append("每条格式为「主体[名称] 检查内容｜违规:违规情形」。")
+            lines.extend(_family_subject_rows(index, total))
+            part_rows = list(SCENE_PART_LINES.get(scene_key) or [])
+            if total > 1:
+                part_rows = [row for position, row in enumerate(part_rows)
+                             if position % total == index]
+            if part_rows:
+                lines.append(f"【本场景部件细项】（{label}，共{len(part_rows)}条，"
+                             "逐条对照图片里的实物核对；"
+                             "一条只说一件事，看不见或证据不足就跳过，不要据推测判定缺失）：")
+                lines.extend(part_rows)
+            lines.append(CHECKLIST_USAGE)
+            return "\n".join(lines)
         if scope in {"family", "family_dims"} and scene_key not in SCENE_FAMILY_CHECKLISTS:
             # 明确点名"脚手架"这种家族请求，交给家族维度清单（它写明悬挑式/扣件式/盘扣式的差别）；
             # 具体场景才走家族分组的主体清单。
@@ -2790,7 +2810,10 @@ def _merge_branch_issues(branch_payloads: list[dict[str, Any]]) -> list[dict[str
     order = {"CLEAR": 0, "SUSPECTED": 1, "NOT_ASSESSABLE": 2}
     merged.sort(key=lambda item: (order.get(str(item.get("status")).upper(), 3),
                                  -float(item.get("confidence") or 0)))
-    return merged[:8]
+    # 报告能带多少条。截断会把"看得见但不够显眼"的隐患切掉——
+    # 70 张实测有 18 张（26%）正好顶到 8 条上限。
+    limit = env_int("MAX_REPORT_ISSUES", 8)
+    return merged[:limit] if limit > 0 else merged
 
 
 def run_branches(args: argparse.Namespace, image_path: Path) -> int:
