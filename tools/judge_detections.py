@@ -19,6 +19,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -67,12 +68,42 @@ def build_issues(issues: list[dict[str, Any]] | None) -> str:
 
 
 def _extract_json(text: str) -> dict[str, Any]:
+    """Read the verdict out of the judge's answer.
+
+    The judge is a small model with a long reason field, and its answer
+    sometimes arrives cut off. A truncated reason must not throw the whole
+    verdict away: the hit flag and the index are what the score depends on,
+    and both sit at the front of the object.
+    """
     text = text.strip()
     start = text.find("{")
     end = text.rfind("}")
-    if start < 0 or end <= start:
-        raise ValueError(f"judge returned no JSON: {text[:200]!r}")
-    return json.loads(text[start : end + 1])
+    if start >= 0 and end > start:
+        try:
+            return json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            pass
+    # 截断的 JSON：从头开始逐字符补齐引号与括号
+    if start >= 0:
+        fragment = text[start:]
+        repaired = _repair_truncated(fragment)
+        if repaired is not None:
+            return repaired
+    raise ValueError(f"judge returned no JSON: {text[:200]!r}")
+
+
+def _repair_truncated(fragment: str) -> dict[str, Any] | None:
+    """Recover hit and index from a verdict that was cut off mid reason."""
+    hit = re.search(r'"hit"\s*:\s*(true|false)', fragment)
+    if not hit:
+        return None
+    index = re.search(r'"index"\s*:\s*(null|\d+)', fragment)
+    reason = re.search(r'"reason"\s*:\s*"([^"]*)', fragment)
+    return {
+        "hit": hit.group(1) == "true",
+        "index": None if not index or index.group(1) == "null" else int(index.group(1)),
+        "reason": (reason.group(1) if reason else "") + "（裁判回答被截断，按已给出的结论判定）",
+    }
 
 
 async def _judge_one(client: httpx.AsyncClient, url: str, headers: dict[str, str],
@@ -81,22 +112,31 @@ async def _judge_one(client: httpx.AsyncClient, url: str, headers: dict[str, str
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 600,
+        "max_tokens": 900,
         "temperature": 0,
         "response_format": {"type": "json_object"},
     }
     async with semaphore:
-        try:
-            response = await client.post(url, headers=headers, json=payload, timeout=60)
-            response.raise_for_status()
-            data = response.json()
-            content = data["choices"][0]["message"].get("content") or ""
-            verdict = _extract_json(content)
-            return {"hit": bool(verdict.get("hit")), "index": verdict.get("index"),
-                    "reason": str(verdict.get("reason") or "")[:300]}
-        except Exception as exc:  # a judge failure must not look like a detection failure
-            return {"hit": False, "index": None, "reason": f"裁判调用失败：{exc}"[:300],
-                    "_judge_error": type(exc).__name__}
+        last: Exception | None = None
+        for attempt in range(3):
+            try:
+                response = await client.post(url, headers=headers, json=payload, timeout=90)
+                response.raise_for_status()
+                data = response.json()
+                content = data["choices"][0]["message"].get("content") or ""
+                verdict = _extract_json(content)
+                return {"hit": bool(verdict.get("hit")), "index": verdict.get("index"),
+                        "reason": str(verdict.get("reason") or "")[:300]}
+            except Exception as exc:  # noqa: BLE001 - a judge failure must not look like a miss
+                last = exc
+                # 余额不足重试没有意义，其余瞬时故障重试两次
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                if status == 402:
+                    break
+                await asyncio.sleep(1.5 * (attempt + 1))
+        # 判不了的记录必须单独标记，不能算成漏检
+        return {"hit": False, "index": None, "reason": f"裁判调用失败：{last}"[:300],
+                "_judge_error": type(last).__name__, "_unjudged": True}
 
 
 async def judge_many(items: list[dict[str, Any]], concurrency: int = 12) -> list[dict[str, Any]]:
@@ -163,7 +203,9 @@ def main() -> int:
     target = Path(args.out) if args.out else records_path.parent / "judge_verdicts.json"
     target.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     hits = sum(1 for row in out if row["judge"].get("hit"))
-    print(f"命中 {hits}/{len(out)}，写入 {target}", file=sys.stderr)
+    unjudged = sum(1 for row in out if row["judge"].get("_unjudged"))
+    note = f"，其中 {unjudged} 条判不了（不计入分母）" if unjudged else ""
+    print(f"命中 {hits}/{len(out) - unjudged}{note}，写入 {target}", file=sys.stderr)
     return 0
 
 

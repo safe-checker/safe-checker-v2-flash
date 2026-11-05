@@ -4,104 +4,67 @@
 Usage:
     .venv/bin/python tools/score_arms.py <result_dir> [verdicts.json]
 
-The verdicts must come from tools/judge_detections.py; a lexical comparison
+The verdicts must come from tools/judge_detections.py. A lexical comparison
 would score every paraphrase as a miss.
+
+Records the judge could not answer are left out of the denominator and
+reported separately: a judge failure is not a detection failure, and counting
+it as a miss drags every number down.
 """
-import json, statistics, sys
-from collections import Counter, defaultdict
+from __future__ import annotations
+
+import json
+import statistics
+import sys
+from collections import defaultdict
 from pathlib import Path
 
-src = Path(sys.argv[1] if len(sys.argv) > 1 else '/tmp/safety_eval/results/final_merged')
-verdict_file = Path(sys.argv[2]) if len(sys.argv) > 2 else src/'judge_verdicts.json'
-recs = [json.loads(l) for l in (src/'records.jsonl').read_text(encoding='utf-8').splitlines() if l.strip()]
-verd = json.loads(verdict_file.read_text(encoding='utf-8'))
 
-# status per (sample_id, version) from records
-status = {(r['sample_id'], r['version']): r['result'].get('status') for r in recs}
-wall   = defaultdict(list)
-for r in recs:
-    wall[r['version']].append(r['wall_seconds'])
+def main() -> int:
+    src = Path(sys.argv[1] if len(sys.argv) > 1 else "/tmp/safety_eval/results/final_merged")
+    verdict_file = Path(sys.argv[2]) if len(sys.argv) > 2 else src / "judge_v2.json"
+    if not verdict_file.exists():
+        verdict_file = src / "judge_new.json"
+    recs = [json.loads(line) for line in
+            (src / "records.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+    verd = json.loads(verdict_file.read_text(encoding="utf-8"))
+    judged = {(row["sample_id"], row["version"]): row["judge"] for row in verd}
 
-judge_by = {}
-for v in verd:
-    judge_by[(v['sample_id'], v['version'])] = v
+    print(f"记录 {len(recs)} 条，裁判结果 {verdict_file.name}")
+    arms = sorted({row["version"] for row in recs})
+    print(f"{'臂':<30}{'命中/已判':>14}{'有输出':>12}{'空输出':>8}{'判不了':>8}"
+          f"{'中位耗时':>10}{'p90':>8}{'max':>8}")
+    for arm in arms:
+        rows = [row for row in recs if row["version"] == arm]
+        scored = [row for row in rows if (row["sample_id"], arm) in judged
+                  and not judged[(row["sample_id"], arm)].get("_unjudged")]
+        unjudged = len(rows) - len(scored)
+        hits = sum(1 for row in scored if judged[(row["sample_id"], arm)].get("hit"))
+        ok = [row for row in rows if row["result"].get("issues")]
+        times = sorted(row["wall_seconds"] for row in rows)
+        rate = f"{hits}/{len(scored)} = {hits/max(len(scored),1)*100:.1f}%"
+        print(f"{arm:<30}{rate:>14}{len(ok):>12}{len(rows)-len(ok):>8}{unjudged:>8}"
+              f"{statistics.median(times):>10.2f}{times[int(len(times)*0.9)-1]:>8.2f}{max(times):>8.2f}")
 
-def summarize(version):
-    rows = [v for v in verd if v['version'] == version]
-    ok = [v for v in rows if status.get((v['sample_id'], version)) == 'success']
-    hits = [v for v in ok if v['judge'].get('hit')]
-    # recall over the arm's own sample set: samples that produced a successful report
-    n_scenes = Counter(v['sample_id'] for v in ok)
-    return {
-        'version': version,
-        'judged': len(rows),
-        'success': len(ok),
-        'complete_rate': len(ok)/len(rows) if rows else 0,
-        'hit': len(hits),
-        'hit_rate': len(hits)/len(ok) if ok else 0,
-        'wall_med': statistics.median(wall[version]) if wall[version] else 0,
-        'wall_p90': sorted(wall[version])[int(len(wall[version])*0.9)-1] if wall[version] else 0,
-        'wall_max': max(wall[version]) if wall[version] else 0,
-        'scene_hits': Counter(v['sample_id'].split('0')[0] for v in hits),
-        'scene_total': Counter(v['sample_id'] for v in ok),
-    }
+    if len(arms) > 1:
+        ids = sorted({row["sample_id"] for row in recs})
+        common = [sid for sid in ids
+                  if all((sid, arm) in judged and not judged[(sid, arm)].get("_unjudged")
+                         for arm in arms)]
+        if common:
+            print(f"\n配对（同 {len(common)} 张图全部判得了）:")
+            for arm in arms:
+                hits = sum(1 for sid in common if judged[(sid, arm)].get("hit"))
+                print(f"   {arm:<30}{hits}/{len(common)} = {hits/len(common)*100:.1f}%")
+            base = arms[0]
+            for arm in arms[1:]:
+                only_new = sum(1 for sid in common
+                               if judged[(sid, arm)].get("hit") and not judged[(sid, base)].get("hit"))
+                only_base = sum(1 for sid in common
+                                if judged[(sid, base)].get("hit") and not judged[(sid, arm)].get("hit"))
+                print(f"   {arm} 独赢 {only_new} 张，{base} 独赢 {only_base} 张 → 净 {only_new-only_base:+d}")
+    return 0
 
-versions = sorted({v['version'] for v in verd})
-print('='*96)
-print(f'最终验证：140 张陌生数据集 × {len(versions)} 臂（LLM 裁判，hit=真命中）')
-print('='*96)
-for ver in versions:
-    s = summarize(ver)
-    print(f"\n[{s['version']}]  成功 {s['success']}/{s['judged']} ({s['complete_rate']*100:.1f}%)   "
-          f"命中 {s['hit']}/{s['success']} = {s['hit_rate']*100:.1f}%   "
-          f"耗时 中位 {s['wall_med']:.2f}s / p90 {s['wall_p90']:.2f}s / max {s['wall_max']:.2f}s")
 
-# paired: scene_conc4 vs auto_conc4 on same sample_ids
-a, b = 'scene_conc4', 'auto_conc4'
-if a in versions and b in versions:
-    ja = {v['sample_id']: v for v in verd if v['version'] == a}
-    jb = {v['sample_id']: v for v in verd if v['version'] == b}
-    common = sorted(set(ja) & set(jb))
-    both = only_a = only_b = neither = 0
-    for s in common:
-        ha = bool(ja[s]['judge'].get('hit')); hb = bool(jb[s]['judge'].get('hit'))
-        if ha and hb: both += 1
-        elif ha: only_a += 1
-        elif hb: only_b += 1
-        else: neither += 1
-    n = len(common)
-    print('\n' + '='*96)
-    print(f'配对对比（同一张图，n={n}）')
-    print('='*96)
-    print(f'  两臂都命中 : {both}')
-    print(f'  仅指定场景命中: {only_a}')
-    print(f'  仅 AUTO 命中  : {only_b}')
-    print(f'  两臂都漏检  : {neither}')
-    print(f'  命中率  指定场景 {both+only_a}/{n} = {(both+only_a)/n*100:.1f}%   '
-          f'AUTO {(both+only_b)}/{n} = {(both+only_b)/n*100:.1f}%   '
-          f'Δ = {((both+only_a)-(both+only_b))/n*100:+.1f}pp')
-
-    print('\n  分场景命中率（指定场景 / AUTO）:')
-    scenes = defaultdict(lambda: [0, 0, 0])
-    for s in common:
-        sc = ja[s]['sample_id']
-        sc = ''.join(ch for ch in sc if not ch.isdigit())
-        ha = bool(ja[s]['judge'].get('hit')); hb = bool(jb[s]['judge'].get('hit'))
-        scenes[sc][0] += ha; scenes[sc][1] += hb; scenes[sc][2] += 1
-    for sc, (ha, hb, tot) in sorted(((k, v) for k, v in scenes.items()), key=lambda kv: -kv[1][2]):
-        print(f'    {sc:<10} {ha}/{tot} = {ha/tot*100:5.1f}%   AUTO {hb}/{tot} = {hb/tot*100:5.1f}%   Δ{(ha-hb)/tot*100:+5.1f}pp')
-
-# per-scene for the main arm
-print('\n' + '='*96)
-for ver in versions:
-    if ver.endswith('_gen'): continue
-    rows = [v for v in verd if v['version'] == ver]
-    sc = defaultdict(lambda: [0,0])
-    for v in rows:
-        if status.get((v['sample_id'], ver)) != 'success': continue
-        k = ''.join(ch for ch in v['sample_id'] if not ch.isdigit())
-        sc[k][1] += 1
-        if v['judge'].get('hit'): sc[k][0] += 1
-    print(f'\n[{ver}] 分场景命中：')
-    for k, (h, t) in sorted(sc.items(), key=lambda kv: -kv[1][1]):
-        print(f'    {k:<10} {h}/{t} = {h/t*100:5.1f}%')
+if __name__ == "__main__":
+    raise SystemExit(main())

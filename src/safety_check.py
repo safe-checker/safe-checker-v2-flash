@@ -607,8 +607,9 @@ def _build_scene_checklist_section(scene_key: str) -> str:
     # USE_MAIN_SYSTEM_RULES=0 回到合并前的清单，用于对照实验
     use_main = os.environ.get("USE_MAIN_SYSTEM_RULES", "1").strip() != "0"
     if scene_key and scene_key != "AUTO":
-        # 默认 family：家族主体 + 精简渲染。140 张实测这一档最好（见 AGENTS.md）。
-        scope = os.environ.get("SCENE_CHECKLIST_SCOPE", "family").strip().lower() or "family"
+        # 默认 family_parts：家族主体 + 本场景部件级细项。
+        # 140 张交错实测：family_parts 71.3% vs family 69.1%（配对 136 张，净 +3）。
+        scope = os.environ.get("SCENE_CHECKLIST_SCOPE", "family_parts").strip().lower() or "family_parts"
         if scope == "hybrid":
             index, total = _group_index()
             return _hybrid_checklist(scene_key, index, total)
@@ -2845,7 +2846,7 @@ def _merge_branch_issues(branch_payloads: list[dict[str, Any]]) -> list[dict[str
                                  -float(item.get("confidence") or 0)))
     # 报告能带多少条。截断会把"看得见但不够显眼"的隐患切掉——
     # 70 张实测有 18 张（26%）正好顶到 8 条上限。
-    limit = env_int("MAX_REPORT_ISSUES", 8)
+    limit = env_int("MAX_REPORT_ISSUES", 12)
     return merged[:limit] if limit > 0 else merged
 
 
