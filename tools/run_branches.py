@@ -85,12 +85,15 @@ def main() -> int:
         branches = int(parts[1]) if len(parts) > 1 else args.branches
         risk = parts[2] if len(parts) > 2 else "3"
         report = parts[3] if len(parts) > 3 else "8"
+        enum = parts[4] if len(parts) > 4 else "0"
         arms.append({"scope": scope, "branches": branches, "risk": risk, "report": report,
-                     "version": f"{scope}_b{branches}_r{risk}_i{report}"})
+                     "enum": enum,
+                     "version": f"{scope}_b{branches}_r{risk}_i{report}_e{enum}"})
     if not arms:
         arms = [{"scope": os.environ.get("SCENE_CHECKLIST_SCOPE", "family"),
                  "branches": args.branches, "risk": os.environ.get("MAX_RISK_ITEMS", "3"),
                  "report": os.environ.get("MAX_REPORT_ISSUES", "8"),
+                 "enum": os.environ.get("ENUMERATE_PARTS", "0"),
                  "version": f"branches{args.branches}"}]
     calls = sum(a["branches"] for a in arms)
     print(f"取样 {len(picked)} 张，每张 {len(arms)} 臂（{calls} 次调用），共 {len(picked) * calls} 次",
@@ -107,7 +110,9 @@ def main() -> int:
                            MODEL_RETRY_MIN_BUDGET="1.0", MODEL_CONNECT_TIMEOUT="6.0",
                            IMAGE_DETAIL="low", MAX_IMAGE_EDGE="768",
                            CHECKLIST_AUTO_MODE="subject", SCENE_CHECKLIST_SCOPE=arm["scope"],
-                           MAX_RISK_ITEMS=arm["risk"], MAX_REPORT_ISSUES=arm["report"])
+                           MAX_RISK_ITEMS=arm["risk"], MAX_REPORT_ISSUES=arm["report"],
+                           ENUMERATE_PARTS=arm.get("enum", "0"),
+                           MAX_OBJECTS="12" if arm.get("enum", "0") == "1" else "6")
                 command = [PY_BIN, str(BASE / "src" / "safety_check.py"), str(image),
                            "--scene", label["test_scene"], "--branches", str(arm["branches"]),
                            "--json-output", "--no-save"]

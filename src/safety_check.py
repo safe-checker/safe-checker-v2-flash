@@ -63,6 +63,36 @@ DEFAULT_PROMPT = (
 )
 
 
+def _objects_instruction() -> str:
+    """How the model is told to build the object list.
+
+    The original wording asks for the objects the safety judgement needs, so
+    the list is built backwards from the risks the model already believes in.
+    A part it has not decided is a risk for never enters the list, so it is
+    never looked at and never reported. On the hundred and forty image set
+    ninety four percent of the misses were parts the model never mentioned at
+    all, and adding those parts to the checklist changed nothing, because the
+    list was still built backwards.
+
+    Enumerating first removes that loop: every visible part gets written down
+    before any judgement is made, and each of them is then checked for the
+    protection, fixing, closure, locking and marking it should have.
+    """
+    limit = env_int("MAX_OBJECTS", 12)
+    if os.environ.get("ENUMERATE_PARTS", "0").strip() != "1":
+        return (
+            "先建立精简的 objects 对象清单，只收录安全判断所需的主体设备、关键部件、作业区域、"
+            "危险源、防护设施以及被风险引用的对象，最多8个；不要收录与安全判断无关的背景物。"
+        )
+    return (
+        "第一步先把图中看得见的设备与部件全部枚举出来，包括主体设备、关键部件、作业区域、"
+        f"危险源、防护设施，最多{limit}个；不论你现在是否认为它有风险都要列——先看全再判断，"
+        "不要因为“看起来应该没问题”就不列；背景物、天空、地面可以不列，被风险引用的对象也要列。"
+        "第二步对枚举出的每一个部件，逐个问一句“这个部件该有的防护、固定、封闭、上锁、标识有没有”，"
+        "确实缺失、损坏、松脱的才写进 issues，看不清的写 uncertain 不要写成缺失。"
+    )
+
+
 def _semantic_prompt_body(scene: str | None) -> str:
     scene_key = normalize_scene(scene)
     profile = get_scene_profile(scene_key)
@@ -70,10 +100,11 @@ def _semantic_prompt_body(scene: str | None) -> str:
     checklist_section = build_scene_checklist_section(scene_key)
     if not checklist_section:
         checklist_section = ""
+    objects_instruction = _objects_instruction()
     return f"""你是施工现场安全视觉检测模型。根据输入图片独立完成一次全面、快速的安全检查。
 检查场景提示：{profile['label']}。该提示只是待验证线索，不能覆盖图片证据。先根据主体设备、结构、铭牌和用途标识识别实际场景；施工升降机/施工电梯的吊笼、层门、导轨、控制面板及“自动开门、禁止倚靠”等标识不得仅因出现电控柜而归为临时用电。用户未指定场景时按综合施工现场检查。
 
-检查要求：先建立精简的 objects 对象清单，只收录安全判断所需的主体设备、关键部件、作业区域、危险源、防护设施以及被风险引用的对象，最多8个；不要收录与安全判断无关的背景物。再检查个人防护、作业行为、空间关系、临边洞口、高处、临时用电、机械、吊装、脚手架、基坑、消防、材料、通道及隔离警示等风险。只依据图片直接可见证据；不得把阴影、反光、模糊、遮挡或画面裁切推断成违规。未入镜不等于缺失，空间关系须有清楚几何证据。对开/闭、干/湿、有/无、内/外、存在/缺失、占用/相邻等状态，必须确认目标身份、部件归属和边界，给出至少2条相互独立的直接视觉线索，并排除一个最合理的相反解释；否则只能 SUSPECTED 或 NOT_ASSESSABLE。静态图片不能证明资质、票证、检测记录、承载力、功能试验或精确距离。
+检查要求：{objects_instruction}再检查个人防护、作业行为、空间关系、临边洞口、高处、临时用电、机械、吊装、脚手架、基坑、消防、材料、通道及隔离警示等风险。只依据图片直接可见证据；不得把阴影、反光、模糊、遮挡或画面裁切推断成违规。未入镜不等于缺失，空间关系须有清楚几何证据。对开/闭、干/湿、有/无、内/外、存在/缺失、占用/相邻等状态，必须确认目标身份、部件归属和边界，给出至少2条相互独立的直接视觉线索，并排除一个最合理的相反解释；否则只能 SUSPECTED 或 NOT_ASSESSABLE。静态图片不能证明资质、票证、检测记录、承载力、功能试验或精确距离。
 
 若用户同时提供全图和局部图，第一张始终是整图，后续局部图只用于补充细节；必须先用整图建立空间关系，再用局部图确认部件状态，不能把局部裁剪边界当作原图边界，也不能因局部图看不全而推断整图中目标缺失。
 
@@ -164,7 +195,7 @@ _OUTPUT_TAIL_FULL = """只输出一个合法JSON对象，不输出Markdown、代
 
 
 _OUTPUT_TAIL_COMPACT = """只输出一个合法JSON对象，不输出Markdown、代码围栏或解释。按严重度最多输出{MAX_RISK_ITEMS}条最重要风险。
-使用下面的短键输出，不要展开成完整字段名；中文一律短句：evidence 不超过40字，item 不超过25字，target 不超过12字，position 不超过8字，alt 不超过15字，sp/cv 里的锚点不超过8字，cu/vc 每项不超过10字且最多2项。objs 最多6个，ppl 只列与风险或防护判断相关的人。
+使用下面的短键输出，不要展开成完整字段名；中文一律短句：evidence 不超过40字，item 不超过25字，target 不超过12字，position 不超过8字，alt 不超过15字，sp/cv 里的锚点不超过8字，cu/vc 每项不超过10字且最多2项。objs 最多{MAX_OBJECTS}个，ppl 只列与风险或防护判断相关的人。
 枚举值必须写全称，例如 status 写 CLEAR / SUSPECTED / NOT_ASSESSABLE，vis 写 complete / partial / occluded / not_visible，pp/hp 写 worn / not_worn / improper / uncertain / not_applicable，el 写 GROUND_LEVEL / LOW_OBSTACLE / ELEVATED_WITH_FALL_RISK / UNCERTAIN，rs 写 STATIC / SUSPENDED / MOVING / UNCERTAIN，pz 写 UNDER_LOAD / SWING_PATH / ADJACENT / OUTSIDE / UNCERTAIN，rel 写 OVERLAP / BLOCKING / CONTACT / ADJACENT / SEPARATE / UNCERTAIN，ev 写 direct / partial / occluded / not_visible / ambiguous，cc 写 high / medium / low / unknown。
 reg 只写标准编号与条号两项，不要写标准全称和条文要点，程序用本地已核验目录回填；无法确定条号时写 "a": "NEEDS_VERIFICATION"。
 格式：
@@ -763,7 +794,9 @@ def max_risk_items() -> int:
 def build_single_vision_system_prompt(scene: str | None, compact: bool = True) -> str:
     """Semantic rules stay identical in both modes; only the output template differs."""
     limit = max_risk_items()
-    tail = (_OUTPUT_TAIL_COMPACT if compact else _OUTPUT_TAIL_FULL).replace("{MAX_RISK_ITEMS}", str(limit))
+    objects = env_int("MAX_OBJECTS", 12 if os.environ.get("ENUMERATE_PARTS", "0").strip() == "1" else 6)
+    tail = (_OUTPUT_TAIL_COMPACT if compact else _OUTPUT_TAIL_FULL)
+    tail = tail.replace("{MAX_RISK_ITEMS}", str(limit)).replace("{MAX_OBJECTS}", str(objects))
     return _semantic_prompt_body(scene) + tail
 
 

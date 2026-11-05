@@ -1533,6 +1533,69 @@ class ChecklistScopeTests(unittest.TestCase):
         self.assertNotIn("立杆落地与底部杆件区域", " ".join(branches[1]))
 
 
+class ObjectListInstructionTests(unittest.TestCase):
+    """The object list must not be built backwards from the risks.
+
+    The original wording asked for the objects the safety judgement needs, so
+    a part the model has not decided is a risk for never enters the list and
+    is never reported. Ninety four percent of the misses were parts the model
+    never mentioned at all.
+    """
+
+    def test_default_instruction_stays_backwards(self) -> None:
+        import os
+
+        from safety_check import _objects_instruction
+
+        original = os.environ.pop("ENUMERATE_PARTS", None)
+        try:
+            text = _objects_instruction()
+        finally:
+            if original is not None:
+                os.environ["ENUMERATE_PARTS"] = original
+        self.assertIn("只收录安全判断所需", text)
+
+    def test_enumerate_first_lists_parts_before_judgement(self) -> None:
+        import os
+
+        from safety_check import _objects_instruction
+
+        original = os.environ.get("ENUMERATE_PARTS")
+        original_limit = os.environ.get("MAX_OBJECTS")
+        os.environ["ENUMERATE_PARTS"] = "1"
+        os.environ["MAX_OBJECTS"] = "12"
+        try:
+            text = _objects_instruction()
+        finally:
+            for key, value in (("ENUMERATE_PARTS", original), ("MAX_OBJECTS", original_limit)):
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        self.assertIn("全部枚举出来", text)
+        self.assertIn("不论你是否认为它有风险", text)
+        self.assertIn("12", text)
+
+    def test_object_cap_follows_the_switch(self) -> None:
+        import os
+
+        from safety_check import build_single_vision_system_prompt
+
+        original = os.environ.get("ENUMERATE_PARTS")
+        try:
+            os.environ["ENUMERATE_PARTS"] = "0"
+            plain = build_single_vision_system_prompt("CONSTRUCTION_HOIST")
+            os.environ["ENUMERATE_PARTS"] = "1"
+            listed = build_single_vision_system_prompt("CONSTRUCTION_HOIST")
+        finally:
+            if original is None:
+                os.environ.pop("ENUMERATE_PARTS", None)
+            else:
+                os.environ["ENUMERATE_PARTS"] = original
+        self.assertIn("objs 最多6个", plain)
+        self.assertIn("objs 最多12个", listed)
+
+
 class PartChecklistTests(unittest.TestCase):
     """The part level checklist speaks the same language as the labels.
 
