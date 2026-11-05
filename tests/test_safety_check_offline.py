@@ -1573,7 +1573,7 @@ class ObjectListInstructionTests(unittest.TestCase):
                 else:
                     os.environ[key] = value
         self.assertIn("全部枚举出来", text)
-        self.assertIn("不论你是否认为它有风险", text)
+        self.assertIn("不论你现在是否认为它有风险", text)
         self.assertIn("12", text)
 
     def test_object_cap_follows_the_switch(self) -> None:
