@@ -280,6 +280,17 @@ def _group_index() -> tuple[int | None, int]:
     return index, total
 
 
+def _part_rows_enabled() -> bool:
+    """Whether the part-level checklist joins the prompt for family scenes.
+
+    Before this existed, the part rows only reached the prompt for scenes that
+    were not in SCENE_FAMILY_CHECKLISTS, so construction electricity, the
+    scaffold family and work at height got none of them. The switch keeps the
+    old behaviour available for A/B runs.
+    """
+    return os.getenv("PART_CHECKLIST_IN_FAMILY", "1").strip() in {"1", "true", "True"}
+
+
 def _render_subject_section(subject_lines: list[str], header: str = "") -> str:
     lines = [
         header or ("本场景主体清单：先在图中逐条确认下列主体是否存在。只核对确实存在的主体的条目，"
@@ -684,9 +695,54 @@ def _build_scene_checklist_section(scene_key: str) -> str:
             return "\n".join(lines)
         if rows and index is not None:
             picked = [row for i, row in enumerate(rows) if i % total == index]
-            return _render_subject_section(
-                picked,
-                header=f"本场景检查清单（{label}，共{len(rows)}个可查主体，本路负责{len(picked)}个，逐项核对）：")
+            # GENERAL_SITE 就是"施工现场综合安全"：它的含义是"不知道是什么场景，请全面看一遍"。
+            # 这个场景自己只有"图片中人员"一个主体，只用它等于只查 PPE，比留空走自动场景还窄，
+            # 所以综合场景改用按家族分路的主体清单，四路合起来覆盖全部家族。
+            if scene_key == "GENERAL_SITE" and scope == "family_parts":
+                family_rows = _family_subject_rows(index, total)
+                if family_rows:
+                    part_rows = list(SCENE_PART_LINES.get(scene_key) or [])
+                    if total > 1:
+                        part_rows = [row for position, row in enumerate(part_rows)
+                                     if position % total == index]
+                    total_subjects = sum(len(_family_subject_rows(i, total))
+                                         for i in range(total))
+                    lines = [
+                        f"本场景检查清单（施工现场综合安全：图中出现哪些主体就核对哪些主体；"
+                        f"本路负责其中 {len(family_rows)} 个，共 {total_subjects} 个可查主体）：",
+                        "每条格式为「主体[名称] 检查内容｜违规:违规情形」。",
+                    ]
+                    lines.extend(family_rows)
+                    if part_rows:
+                        lines.append(f"【通用检查细项】（施工现场综合，本路{len(part_rows)}条，"
+                                     "一条只说一件事，逐条对照图片里的实物核对；"
+                                     "看不见或证据不足就跳过，不要据推测判定缺失）：")
+                        lines.extend(part_rows)
+                    lines.append(CHECKLIST_USAGE)
+                    return "\n".join(lines)
+            header = (f"本场景检查清单（{label}，共{len(rows)}个可查主体，本路负责{len(picked)}个，逐项核对）：")
+            # family_parts：本场景的部件级细项也要进提示词。
+            #
+            # 之前只有"家族型场景不在这张名单里"的分支才会带上细项，于是
+            # 施工用电、脚手架家族、高处作业这些场景的细项（熔断器松动、灭火器缺失、
+            # 插头插座、扫地杆、材质损坏……）一条都没进提示词——模型没有理由去看
+            # 一个清单里根本没提到的部位。实测这几类场景的命中率只有 45%。
+            if scope == "family_parts" and _part_rows_enabled():
+                part_rows = list(SCENE_PART_LINES.get(scene_key) or [])
+                if part_rows:
+                    if total > 1:
+                        part_rows = [row for position, row in enumerate(part_rows)
+                                     if position % total == index]
+                    if part_rows:
+                        body = _render_subject_section(picked, header=header)
+                        body = body.replace(
+                            CHECKLIST_USAGE,
+                            f"【本场景部件细项】（{label}，本路{len(part_rows)}条，一条只说一件事，"
+                            "逐条对照图片里的实物核对；看不见或证据不足就跳过，不要据推测判定缺失）：\n"
+                            + "\n".join(part_rows)
+                            + "\n" + CHECKLIST_USAGE)
+                        return body
+            return _render_subject_section(picked, header=header)
     if not enabled:
         return ""
     if scene_key and scene_key in enabled:
@@ -719,6 +775,22 @@ def _build_scene_checklist_section(scene_key: str) -> str:
         if extra:
             lines.append("补充检查项（来自标准条款，与上面同样适用）：")
             lines.extend(extra)
+        # family_parts：家族场景的部件级细项同样要进提示词。
+        # 脚手架家族之前四路拿到的是完全相同的一份家族清单，等于四次重复调用，
+        # 而部件细项（脚手板缺失、扫地杆、剪刀撑、材质损坏……）一条都没进去。
+        if (os.environ.get("SCENE_CHECKLIST_SCOPE", "family_parts").strip().lower() == "family_parts"
+                and _part_rows_enabled()):
+            part_rows = list(SCENE_PART_LINES.get(scene_key) or [])
+            if part_rows:
+                index, total = _group_index()
+                if index is not None and total > 1:
+                    part_rows = [row for position, row in enumerate(part_rows)
+                                 if position % total == index]
+                if part_rows:
+                    lines.append(f"【本场景部件细项】（本路{len(part_rows)}条，一条只说一件事，"
+                                 "逐条对照图片里的实物核对；看不见或证据不足就跳过，"
+                                 "不要据推测判定缺失）：")
+                    lines.extend(part_rows)
         lines.append(CHECKLIST_USAGE)
         return "\n".join(lines)
     if scene_key and scene_key != "AUTO":
@@ -2817,6 +2889,38 @@ def _find_env_file() -> Path:
     return here.with_name(".env")
 
 
+def scene_image_settings(scene: str | None, default_max_edge: int, default_detail: str) -> tuple[int, str]:
+    """Per-scene image resolution and detail level.
+
+    Some scenes fail on small-part defects: a melted breaker inside a
+    distribution box, a cracked coupler on a scaffold pole, a missing toe
+    board. Those are invisible at 768 pixels, while a wide shot of a pit or
+    a hoist gate is perfectly readable there. Raising the resolution for
+    those scenes only keeps the other scenes fast.
+
+    SCENE_IMAGE_OVERRIDES="TEMPORARY_ELECTRICITY=1280:high;SCAFFOLD=1280:high"
+    """
+    raw = os.getenv("SCENE_IMAGE_OVERRIDES", "").strip()
+    if not raw or not scene:
+        return default_max_edge, default_detail
+    code = str(scene).strip().upper()
+    for chunk in raw.split(";"):
+        chunk = chunk.strip()
+        if not chunk or "=" not in chunk:
+            continue
+        key, _, value = chunk.partition("=")
+        key = key.strip().upper()
+        if not (key == code or code.startswith(key)):
+            continue
+        edge_text, _, detail = value.partition(":")
+        try:
+            edge = int(edge_text.strip())
+        except ValueError:
+            continue
+        return edge, (detail.strip() or default_detail)
+    return default_max_edge, default_detail
+
+
 def _merge_branch_issues(branch_payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Merge the issues several branches reported about the same image.
 
@@ -2824,6 +2928,17 @@ def _merge_branch_issues(branch_payloads: list[dict[str, Any]]) -> list[dict[str
     keeps the higher confidence of a near duplicate pair.
     """
     import difflib
+
+    # 三种重复判据，各自由环境变量控制，方便做对照实验。
+    # 阈值调低会让同一条隐患的不同措辞合并成一条：报告条目更少、精确率更高，
+    # 但报告位被占满时排在后面的细部缺陷也就没机会报出来。
+    text_similarity = env_float("MERGE_TEXT_SIM", 0.78)
+    same_risk_key = os.getenv("MERGE_SAME_RISK_KEY", "0").strip() in {"1", "true", "True"}
+    same_risk_root = os.getenv("MERGE_RISK_KEY_ROOT", "0").strip() in {"1", "true", "True"}
+
+    def risk_root(value: Any) -> str:
+        parts = [p for p in str(value or "").split("_") if p]
+        return parts[0] if parts else ""
 
     merged: list[dict[str, Any]] = []
     for payload in branch_payloads:
@@ -2833,10 +2948,18 @@ def _merge_branch_issues(branch_payloads: list[dict[str, Any]]) -> list[dict[str
             key = "".join(ch for ch in str(issue.get("item") or "") if ch.isalnum())
             duplicate = None
             for kept in merged:
-                other = "".join(ch for ch in str(kept.get("item") or "") if ch.isalnum())
-                if difflib.SequenceMatcher(None, key, other).ratio() >= 0.78:
+                if same_risk_key and issue.get("risk_key") and issue.get("risk_key") == kept.get("risk_key"):
                     duplicate = kept
                     break
+                if same_risk_root and risk_root(issue.get("risk_key")) and \
+                        risk_root(issue.get("risk_key")) == risk_root(kept.get("risk_key")):
+                    duplicate = kept
+                    break
+                if text_similarity > 0:
+                    other = "".join(ch for ch in str(kept.get("item") or "") if ch.isalnum())
+                    if difflib.SequenceMatcher(None, key, other).ratio() >= text_similarity:
+                        duplicate = kept
+                        break
             if duplicate is None:
                 merged.append(issue)
             elif float(issue.get("confidence") or 0) > float(duplicate.get("confidence") or 0):
@@ -2867,6 +2990,7 @@ def run_branches(args: argparse.Namespace, image_path: Path) -> int:
     max_edge = env_int("MAX_IMAGE_EDGE", 768)
     jpeg_quality = env_int("JPEG_QUALITY", 70)
     image_detail = os.getenv("IMAGE_DETAIL", "low").strip()
+    max_edge, image_detail = scene_image_settings(requested_scene, max_edge, image_detail)
     max_tokens = env_int("SINGLE_MODEL_MAX_TOKENS", env_int("MAX_TOKENS", 2200))
     temperature = env_float("TEMPERATURE", 0.0)
     reasoning_effort = os.getenv("REASONING_EFFORT", "none").strip().lower()
@@ -3035,6 +3159,7 @@ def main() -> int:
     max_edge = env_int("MAX_IMAGE_EDGE", 768)
     jpeg_quality = env_int("JPEG_QUALITY", 70)
     image_detail = os.getenv("IMAGE_DETAIL", "low").strip()
+    max_edge, image_detail = scene_image_settings(requested_scene, max_edge, image_detail)
     high_detail_min_edge = env_int("IMAGE_DETAIL_HIGH_MIN_EDGE", 1600)
     # 局部图可以用更高的 detail：全图走低分辨率保证全局，局部走高分辨率保证细节
     detail_image_detail = os.getenv("DETAIL_CROP_IMAGE_DETAIL", "").strip() or None

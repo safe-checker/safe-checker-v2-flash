@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import io
 import json
@@ -55,8 +56,48 @@ RETRYABLE_ERRORS = {"timeout", "network_error"}
 MAX_CONCURRENT_REQUESTS = max(1, int(os.getenv("API_MAX_CONCURRENT_REQUESTS", "2")))
 ACCESS_TOKEN = os.getenv("API_ACCESS_TOKEN", "").strip()
 REQUEST_SLOTS = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+
+# 幂等缓存：同一张图重复提交时直接返回上次的结果。
+# 视觉模型在并发批处理下不是确定性的，同一张图两次检测会给出不同的风险项列表
+# （实测 70 张重复跑，没有一张的风险项集合完全相同）。巡检业务本身要求同一张照片
+# 的结论稳定，所以这里按图片内容哈希 + 场景 + 指令做键缓存。
+CACHE_ENABLED = os.getenv("API_RESULT_CACHE", "1").strip() not in {"0", "false", "False"}
+CACHE_TTL_SECONDS = float(os.getenv("API_RESULT_CACHE_TTL", "3600"))
+CACHE_MAX_ENTRIES = max(0, int(os.getenv("API_RESULT_CACHE_MAX", "256")))
+_RESULT_CACHE: "dict[str, tuple[float, dict[str, Any]]]" = {}
 logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
+
+def _cache_key(content: bytes, scene: str, prompt: str, detail_crop: str) -> str:
+    digest = hashlib.sha256(content).hexdigest()
+    return "|".join((digest, scene.strip(), prompt.strip(), detail_crop.strip()))
+
+
+def _cache_get(key: str) -> dict[str, Any] | None:
+    if not CACHE_ENABLED:
+        return None
+    entry = _RESULT_CACHE.get(key)
+    if entry is None:
+        return None
+    stored_at, payload = entry
+    if time.time() - stored_at > CACHE_TTL_SECONDS:
+        _RESULT_CACHE.pop(key, None)
+        return None
+    return payload
+
+
+def _cache_put(key: str, payload: dict[str, Any]) -> None:
+    if not CACHE_ENABLED or CACHE_MAX_ENTRIES == 0:
+        return
+    now = time.time()
+    expired = [k for k, (t, _) in _RESULT_CACHE.items() if now - t > CACHE_TTL_SECONDS]
+    for stale in expired:
+        _RESULT_CACHE.pop(stale, None)
+    while len(_RESULT_CACHE) >= CACHE_MAX_ENTRIES:
+        oldest = min(_RESULT_CACHE, key=lambda k: _RESULT_CACHE[k][0])
+        _RESULT_CACHE.pop(oldest, None)
+    _RESULT_CACHE[key] = (now, payload)
+
 
 def _process_failure(completed: subprocess.CompletedProcess[str], result: Any) -> HTTPException:
     """Map a failed inspection to the HTTP contract the video client expects.
@@ -163,6 +204,11 @@ async def inspect_image(
     if suffix is None:
         raise HTTPException(status_code=415, detail=f"Unsupported image format: {image_format or 'unknown'}.")
 
+    cache_key = _cache_key(content, scene, prompt, detail_crop)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return JSONResponse(cached, headers={"X-Cache": "HIT"})
+
     try:
         await asyncio.wait_for(REQUEST_SLOTS.acquire(), timeout=0.05)
     except TimeoutError:
@@ -239,7 +285,8 @@ async def inspect_image(
             raise _process_failure(completed, result)
         if not isinstance(result, dict):
             raise HTTPException(status_code=502, detail="The inspection process returned invalid JSON.")
-        return JSONResponse(result)
+        _cache_put(cache_key, result)
+        return JSONResponse(result, headers={"X-Cache": "MISS"})
     finally:
         REQUEST_SLOTS.release()
 

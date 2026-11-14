@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import asyncio
 import io
 import json
+import os
 import signal
 import subprocess
 import tempfile
@@ -26,6 +27,68 @@ from safety_check import analyze_image_quality
 PILLOW_WARNING = "safety_check.py:174: DeprecationWarning: Image.Image.getdata is deprecated\n  pixels = list(gray.getdata())"
 
 
+class ApiResultCacheTests(unittest.TestCase):
+    """The idempotency cache: the same picture must give the same answer."""
+
+    def setUp(self):
+        buffer = io.BytesIO()
+        Image.new("RGB", (16, 12), (128, 128, 128)).save(buffer, format="PNG")
+        self.image = buffer.getvalue()
+        api_server._RESULT_CACHE.clear()
+        self.addCleanup(api_server._RESULT_CACHE.clear)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self.addCleanup(loop.close)
+        for name, value in (("ACCESS_TOKEN", ""), ("REQUEST_SLOTS", asyncio.Semaphore(2)),
+                            ("CACHE_ENABLED", True)):
+            patcher = patch.object(api_server, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        client_patcher = TestClient(api_server.app)
+        client_patcher.__enter__()
+        self.addCleanup(client_patcher.__exit__, None, None, None)
+        self.client = client_patcher
+        self.payload = {"status": "success", "issues": [], "issue_count": 0}
+
+    def _post(self, content, scene=""):
+        with patch.object(api_server.subprocess, "run",
+                          return_value=subprocess.CompletedProcess([], 0, json.dumps(self.payload), "")) as run:
+            response = self.client.post(
+                "/v1/inspect", files={"image": ("frame.png", content, "image/png")},
+                data={"scene": scene} if scene else None)
+        return response, run
+
+    def test_same_picture_is_served_from_cache(self):
+        first, run_first = self._post(self.image)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.headers.get("X-Cache"), "MISS")
+        run_first.assert_called_once()
+
+        second, run_second = self._post(self.image)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.headers.get("X-Cache"), "HIT")
+        run_second.assert_not_called()
+        self.assertEqual(first.json(), second.json())
+
+    def test_different_scene_is_not_cached(self):
+        self._post(self.image, scene="高处作业")
+        response, run = self._post(self.image, scene="高处作业")
+        self.assertEqual(response.headers.get("X-Cache"), "HIT")
+        run.assert_not_called()
+
+        response, run = self._post(self.image, scene="起重吊装")
+        self.assertEqual(response.headers.get("X-Cache"), "MISS")
+        run.assert_called_once()
+
+    def test_different_picture_is_not_cached(self):
+        self._post(self.image)
+        other = io.BytesIO()
+        Image.new("RGB", (16, 12), (10, 20, 30)).save(other, format="PNG")
+        response, run = self._post(other.getvalue())
+        self.assertEqual(response.headers.get("X-Cache"), "MISS")
+        run.assert_called_once()
+
+
 class ApiErrorTests(unittest.TestCase):
     def setUp(self):
         buffer = io.BytesIO()
@@ -38,7 +101,9 @@ class ApiErrorTests(unittest.TestCase):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         self.addCleanup(loop.close)
-        for name, value in (("ACCESS_TOKEN", ""), ("REQUEST_SLOTS", asyncio.Semaphore(2))):
+        # 错误契约测试关心的是失败路径，幂等缓存会跨用例复用结果，这里显式关掉。
+        for name, value in (("ACCESS_TOKEN", ""), ("REQUEST_SLOTS", asyncio.Semaphore(2)),
+                            ("CACHE_ENABLED", False)):
             patcher = patch.object(api_server, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -119,7 +184,9 @@ class TransientRetryTests(unittest.TestCase):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         self.addCleanup(loop.close)
-        for name, value in (("ACCESS_TOKEN", ""), ("REQUEST_SLOTS", asyncio.Semaphore(2))):
+        # 错误契约测试关心的是失败路径，幂等缓存会跨用例复用结果，这里显式关掉。
+        for name, value in (("ACCESS_TOKEN", ""), ("REQUEST_SLOTS", asyncio.Semaphore(2)),
+                            ("CACHE_ENABLED", False)):
             patcher = patch.object(api_server, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -165,3 +232,70 @@ class ImageQualityCompatibilityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SceneChecklistTests(unittest.TestCase):
+    """The scene value decides what the model is told to look for."""
+
+    def setUp(self):
+        # 这些环境变量决定提示词里的清单内容，用完必须还原，
+        # 否则会污染同一进程里后面跑的用例。
+        self._saved = {
+            name: os.environ.get(name)
+            for name in ("SCENE_CHECKLIST_SCOPE", "CHECKLIST_SUBJECT_GROUP",
+                         "PART_CHECKLIST_IN_FAMILY")
+        }
+        os.environ["SCENE_CHECKLIST_SCOPE"] = "family_parts"
+        os.environ["CHECKLIST_SUBJECT_GROUP"] = "0/4"
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        for name, value in self._saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    def _checklist(self, scene_key):
+        import safety_check as checker
+        return checker.build_scene_checklist_section(scene_key)
+
+    def test_comprehensive_scene_covers_more_than_the_person_subject(self):
+        """施工现场综合安全 must not collapse to the single "图片中人员" subject.
+
+        GENERAL_SITE only owns one subject of its own, so using it directly
+        made the comprehensive scene narrower than leaving the scene unset.
+        """
+        text = self._checklist("GENERAL_SITE")
+        self.assertIn("施工现场综合安全", text.split("\n")[0])
+        self.assertGreater(text.count("主体["), 5)
+
+    def test_electricity_scene_carries_part_level_details(self):
+        """The part-level checklist has to reach the family scenes.
+
+        Without it the model is never told to look for a loose fuse, a
+        missing fire extinguisher or a bent scaffold pole. The rows are split
+        across the branches, so all four have to be checked together.
+        """
+        import safety_check as checker
+        combined = ""
+        for group in ("0/4", "1/4", "2/4", "3/4"):
+            os.environ["CHECKLIST_SUBJECT_GROUP"] = group
+            combined += checker.build_scene_checklist_section("TEMPORARY_ELECTRICITY")
+        self.assertIn("部件细项", combined)
+        for keyword in ("熔断器", "灭火器", "插座", "接地"):
+            self.assertIn(keyword, combined)
+
+    def test_part_rows_can_be_switched_off_for_comparison(self):
+        import safety_check as checker
+        previous = os.environ.get("PART_CHECKLIST_IN_FAMILY")
+        try:
+            os.environ["PART_CHECKLIST_IN_FAMILY"] = "0"
+            self.assertNotIn("部件细项", self._checklist("TEMPORARY_ELECTRICITY"))
+            os.environ["PART_CHECKLIST_IN_FAMILY"] = "1"
+            self.assertIn("部件细项", self._checklist("TEMPORARY_ELECTRICITY"))
+        finally:
+            if previous is None:
+                os.environ.pop("PART_CHECKLIST_IN_FAMILY", None)
+            else:
+                os.environ["PART_CHECKLIST_IN_FAMILY"] = previous
