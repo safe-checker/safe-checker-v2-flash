@@ -1,0 +1,96 @@
+{
+  "sampling_rule": "按场景配额分层抽样；场景内用固定随机种子打乱后取前 N；抽样规则在跑测前固定并随数据集一并归档。",
+  "seed": 20261113,
+  "per_scene_target": 100,
+  "total_target": 1000,
+  "total_taken": 140,
+  "total_shortfall": 860,
+  "meets_minimum": false,
+  "scenes_covered": 7,
+  "per_scene": [
+    {
+      "scene_code": "CONSTRUCTION_HOIST",
+      "scene": "施工升降机",
+      "available": 20,
+      "target": 100,
+      "taken": 20,
+      "shortfall": 80
+    },
+    {
+      "scene_code": "FOUNDATION_PIT",
+      "scene": "基坑工程",
+      "available": 20,
+      "target": 100,
+      "taken": 20,
+      "shortfall": 80
+    },
+    {
+      "scene_code": "LIFTING_OPERATIONS",
+      "scene": "起重吊装",
+      "available": 20,
+      "target": 100,
+      "taken": 20,
+      "shortfall": 80
+    },
+    {
+      "scene_code": "SCAFFOLD_ATTACHED_LIFTING",
+      "scene": "附着升降脚手架",
+      "available": 0,
+      "target": 100,
+      "taken": 0,
+      "shortfall": 100
+    },
+    {
+      "scene_code": "SCAFFOLD_CANTILEVER",
+      "scene": "悬挑式脚手架",
+      "available": 0,
+      "target": 100,
+      "taken": 0,
+      "shortfall": 100
+    },
+    {
+      "scene_code": "SCAFFOLD_COUPLER_TYPE",
+      "scene": "扣件式钢管脚手架",
+      "available": 20,
+      "target": 100,
+      "taken": 20,
+      "shortfall": 80
+    },
+    {
+      "scene_code": "SCAFFOLD_DISC_BUCKLE",
+      "scene": "盘扣式脚手架",
+      "available": 0,
+      "target": 100,
+      "taken": 0,
+      "shortfall": 100
+    },
+    {
+      "scene_code": "TEMPORARY_ELECTRICITY",
+      "scene": "施工用电",
+      "available": 20,
+      "target": 100,
+      "taken": 20,
+      "shortfall": 80
+    },
+    {
+      "scene_code": "TOWER_CRANE",
+      "scene": "塔吊",
+      "available": 20,
+      "target": 100,
+      "taken": 20,
+      "shortfall": 80
+    },
+    {
+      "scene_code": "WORK_AT_HEIGHT",
+      "scene": "高处作业",
+      "available": 20,
+      "target": 100,
+      "taken": 20,
+      "shortfall": 80
+    }
+  ],
+  "sources": {
+    "image_set": "评测数据/施工安全图集_140张",
+    "frames_dir": "None"
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "metric": "P7 风险预警延迟",
+  "threshold_seconds": 8.0,
+  "judgement": "从严口径：全部有效样本的延迟均不大于阈值",
+  "planned_samples": 10,
+  "valid_samples": 9,
+  "invalid_samples": 1,
+  "over_threshold_samples": 0,
+  "over_threshold_sample_ids": [],
+  "latency": {
+    "count": 9,
+    "min": 5.106,
+    "mean": 5.891,
+    "median": 5.983,
+    "p90": 6.469,
+    "p95": 6.469,
+    "max": 6.469
+  },
+  "per_scene_valid": {
+    "TEMPORARY_ELECTRICITY": 0,
+    "WORK_AT_HEIGHT": 0,
+    "FOUNDATION_PIT": 0,
+    "LIFTING_OPERATIONS": 0,
+    "TOWER_CRANE": 0,
+    "CONSTRUCTION_HOIST": 9,
+    "SCAFFOLD_COUPLER_TYPE": 0,
+    "SCAFFOLD_DISC_BUCKLE": 0,
+    "SCAFFOLD_CANTILEVER": 0,
+    "SCAFFOLD_ATTACHED_LIFTING": 0
+  },
+  "sample_requirement": {
+    "min_total": 1000,
+    "min_per_scene": 100,
+    "total_shortfall": 991,
+    "per_scene_shortfall": {
+      "TEMPORARY_ELECTRICITY": 100,
+      "WORK_AT_HEIGHT": 100,
+      "FOUNDATION_PIT": 100,
+      "LIFTING_OPERATIONS": 100,
+      "TOWER_CRANE": 100,
+      "CONSTRUCTION_HOIST": 91,
+      "SCAFFOLD_COUPLER_TYPE": 100,
+      "SCAFFOLD_DISC_BUCKLE": 100,
+      "SCAFFOLD_CANTILEVER": 100,
+      "SCAFFOLD_ATTACHED_LIFTING": 100
+    }
+  },
+  "compliance": {
+    "latency": false,
+    "sample_sufficiency": false
+  }
+}

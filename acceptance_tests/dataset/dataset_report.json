@@ -1,0 +1,111 @@
+{
+  "target_per_scene": 100,
+  "total_target": 1000,
+  "total_taken": 139,
+  "total_shortfall": 861,
+  "meets_minimum": false,
+  "per_scene": [
+    {
+      "scene_code": "CONSTRUCTION_HOIST",
+      "scene": "施工升降机",
+      "available": 19,
+      "unique_available": 19,
+      "target": 100,
+      "taken": 19,
+      "shortfall": 81
+    },
+    {
+      "scene_code": "FOUNDATION_PIT",
+      "scene": "基坑工程",
+      "available": 20,
+      "unique_available": 20,
+      "target": 100,
+      "taken": 20,
+      "shortfall": 80
+    },
+    {
+      "scene_code": "LIFTING_OPERATIONS",
+      "scene": "起重吊装",
+      "available": 20,
+      "unique_available": 20,
+      "target": 100,
+      "taken": 20,
+      "shortfall": 80
+    },
+    {
+      "scene_code": "SCAFFOLD_ATTACHED_LIFTING",
+      "scene": "附着升降脚手架",
+      "available": 0,
+      "unique_available": 0,
+      "target": 100,
+      "taken": 0,
+      "shortfall": 100
+    },
+    {
+      "scene_code": "SCAFFOLD_CANTILEVER",
+      "scene": "悬挑式脚手架",
+      "available": 0,
+      "unique_available": 0,
+      "target": 100,
+      "taken": 0,
+      "shortfall": 100
+    },
+    {
+      "scene_code": "SCAFFOLD_COUPLER_TYPE",
+      "scene": "扣件式钢管脚手架",
+      "available": 20,
+      "unique_available": 20,
+      "target": 100,
+      "taken": 20,
+      "shortfall": 80
+    },
+    {
+      "scene_code": "SCAFFOLD_DISC_BUCKLE",
+      "scene": "盘扣式脚手架",
+      "available": 0,
+      "unique_available": 0,
+      "target": 100,
+      "taken": 0,
+      "shortfall": 100
+    },
+    {
+      "scene_code": "TEMPORARY_ELECTRICITY",
+      "scene": "施工用电",
+      "available": 20,
+      "unique_available": 20,
+      "target": 100,
+      "taken": 20,
+      "shortfall": 80
+    },
+    {
+      "scene_code": "TOWER_CRANE",
+      "scene": "塔吊",
+      "available": 20,
+      "unique_available": 20,
+      "target": 100,
+      "taken": 20,
+      "shortfall": 80
+    },
+    {
+      "scene_code": "WORK_AT_HEIGHT",
+      "scene": "高处作业",
+      "available": 20,
+      "unique_available": 20,
+      "target": 100,
+      "taken": 20,
+      "shortfall": 80
+    }
+  ],
+  "sources": {
+    "image_set": "评测数据/施工安全图集_140张",
+    "frames_dir": null
+  },
+  "upload_limit_bytes": 12582912,
+  "excluded_oversized": [
+    {
+      "sample_id": "升降机03",
+      "bytes": 16511792,
+      "image_path": "评测数据/施工安全图集_140张/images/07_施工升降机/升降机03_16072036f893ba097a6dc0c7.jpg"
+    }
+  ]
+}

@@ -1,0 +1,167 @@
+{
+  "verified_articles": 2054,
+  "standards": {
+    "DG/TJ08-2002-2006": 51,
+    "GB/T34023-2017": 11,
+    "GB/T5031-2019": 56,
+    "GB10055-2007": 64,
+    "GB50194-2014": 80,
+    "GB51210-2016": 356,
+    "GB5144-2006": 199,
+    "GB55034-2022": 28,
+    "JGJ/T231-2021": 38,
+    "JGJ/T46-2024": 130,
+    "JGJ130-2011": 72,
+    "JGJ184-2009": 18,
+    "JGJ202-2010": 363,
+    "JGJ276-2012": 316,
+    "JGJ311-2013": 52,
+    "JGJ80-2016": 220
+  },
+  "standards_raw": {
+    "DG/TJ08-2002-2006": 51,
+    "GB 10055—2007": 63,
+    "GB 51210-2016": 193,
+    "GB 5144-2006": 137,
+    "GB 55034-2022": 28,
+    "GB/T34023-2017": 11,
+    "GB/T5031-2019": 56,
+    "GB10055-2007": 1,
+    "GB50194-2014": 80,
+    "GB51210-2016": 163,
+    "GB5144-2006": 62,
+    "JGJ 202-2010": 317,
+    "JGJ 276-2012": 195,
+    "JGJ 276—2012": 121,
+    "JGJ 80-2016": 135,
+    "JGJ/T 231-2021": 38,
+    "JGJ/T 46-2024": 13,
+    "JGJ/T46-2024": 117,
+    "JGJ130-2011": 72,
+    "JGJ184-2009": 18,
+    "JGJ202-2010": 46,
+    "JGJ311-2013": 52,
+    "JGJ80-2016": 85
+  },
+  "standard_count": 16,
+  "standard_number_format_conflicts": [
+    "GB 10055—2007",
+    "GB 51210-2016",
+    "GB 5144-2006",
+    "GB 55034-2022",
+    "JGJ 202-2010",
+    "JGJ 276-2012",
+    "JGJ 276—2012",
+    "JGJ 80-2016",
+    "JGJ/T 231-2021",
+    "JGJ/T 46-2024"
+  ],
+  "standard_rows": 977,
+  "standard_catalog_verified_as_of": "2026-10-26",
+  "scene_keys": [
+    "CONSTRUCTION_HOIST",
+    "FOUNDATION_PIT",
+    "GENERAL_SITE",
+    "LIFTING_OPERATIONS",
+    "SCAFFOLD_ATTACHED_LIFTING",
+    "SCAFFOLD_CANTILEVER",
+    "SCAFFOLD_COUPLER_TYPE",
+    "SCAFFOLD_DISC_BUCKLE",
+    "TEMPORARY_ELECTRICITY",
+    "TOWER_CRANE",
+    "WORK_AT_HEIGHT"
+  ],
+  "version_status": {
+    "current": 41,
+    "current_per_project_rulepack": 2013
+  },
+  "source_authority": {
+    "official_primary_document": 28,
+    "secondary_reference": 13,
+    "standard_fulltext_public_copy": 977,
+    "project_rulepack_snapshot": 1036
+  },
+  "citation_ready": 2054,
+  "official_source_rows": 28,
+  "checks": [
+    {
+      "item": "已核验条款目录规模",
+      "value": 2054,
+      "criterion": "不少于 1000 条",
+      "pass": true
+    },
+    {
+      "item": "覆盖标准部数",
+      "value": 16,
+      "criterion": "不少于 10 部现行标准",
+      "pass": true
+    },
+    {
+      "item": "标准编号写法不一致的编号个数",
+      "value": 7,
+      "criterion": "同一标准应只有一种写法，否则条款匹配可能漏命中",
+      "pass": false
+    },
+    {
+      "item": "标注现行有效的条款数",
+      "value": 2054,
+      "criterion": "全部标注现行有效（current 或 current_per_project_rulepack）",
+      "pass": true
+    },
+    {
+      "item": "逐条比对官方现行版本的条款数",
+      "value": 41,
+      "criterion": "不少于 30 条（其余按项目规则包快照认定现行）",
+      "pass": true
+    },
+    {
+      "item": "允许正式引用的条款数",
+      "value": 2054,
+      "criterion": "不少于 90% 标注 citation_ready=true",
+      "pass": true
+    },
+    {
+      "item": "带来源地址的条款数",
+      "value": 2054,
+      "criterion": "每条可回溯来源",
+      "pass": true
+    },
+    {
+      "item": "带生效日期的条款数",
+      "value": 2054,
+      "criterion": "每条可回溯施行日期",
+      "pass": true
+    },
+    {
+      "item": "附官方文件地址的条款数",
+      "value": 28,
+      "criterion": "不少于 50 条附官方发布地址（可加强项）",
+      "pass": false
+    },
+    {
+      "item": "标准条文抓取交叉核验条数",
+      "value": 977,
+      "criterion": "抓取文本须与规则包交叉核对",
+      "pass": true
+    },
+    {
+      "item": "标准条文带内容哈希条数",
+      "value": 977,
+      "criterion": "每条可回溯原文",
+      "pass": true
+    },
+    {
+      "item": "标准条文带来源地址条数",
+      "value": 977,
+      "criterion": "每条可回溯来源",
+      "pass": true
+    },
+    {
+      "item": "目录覆盖场景键数",
+      "value": 11,
+      "criterion": "覆盖约定的 10 类施工场景",
+      "pass": true
+    }
+  ],
+  "compliance": false
+}

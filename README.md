@@ -6,19 +6,32 @@
 
 坐标由模型按整图 0–1000 归一化网格估计，程序换算为原图像素的左上角 `x,y` 与 `width,height`。视觉模型定位是近似结果，无法可靠定位时返回 `null`，不得将估计框当作测量级边界。
 
-当前支持的场景提示配置：
+### 场景参数 `scene` 怎么用
 
-- 施工现场综合安全
-- 临时用电/配电箱
-- 高处作业
-- 基坑工程
-- 起重吊装
-- 塔式起重机
-- 施工升降机
-- 扣件式钢管脚手架
-- 承插型盘扣式钢管脚手架
-- 悬挑式脚手架
-- 附着式升降脚手架
+`scene`（命令行 `--scene`、接口表单 `scene`）是**给模型的检查范围提示**，不是分类标签：
+它决定系统从本地清单里取哪一套可观测主体写进提示词，模型仍然自己看图判断。
+
+| 传的值 | 归一化后的场景键 | 提示词里放的是什么 | 什么时候用 |
+|---|---|---|---|
+| `临时用电/配电箱` | `TEMPORARY_ELECTRICITY` | 用电场景的可查主体（35 个）＋该场景的部件级细项（16 条） | 已经知道是配电箱场景 |
+| `高处作业` | `WORK_AT_HEIGHT` | 高处场景主体 ＋ 细项（18 条） | 同上 |
+| `基坑工程` | `FOUNDATION_PIT` | 基坑场景主体 ＋ 细项（17 条） | 同上 |
+| `起重吊装` | `LIFTING_OPERATIONS` | 起重场景主体 ＋ 细项 | 同上 |
+| `塔式起重机` | `TOWER_CRANE` | 塔机场景主体 ＋ 细项 | 同上 |
+| `施工升降机` | `CONSTRUCTION_HOIST` | 升降机场景主体 ＋ 细项 | 同上 |
+| `扣件式钢管脚手架` / `承插型盘扣式钢管脚手架` / `悬挑式脚手架` / `附着式升降脚手架` | 对应 4 个场景键 | 对应型式的脚手架主体 ＋ 细项 | 知道脚手架型式时 |
+| `脚手架` | `SCAFFOLD_FAMILY` | 脚手架家族的合并清单（四个型式合看）＋ 脚手架细项（18 条） | 只知道是脚手架、不知道型式时 |
+| **`施工现场综合安全`** | `GENERAL_SITE` | **按家族分路的全部可查主体（62 个）** ＋ 通用检查细项（材料堆放、建筑垃圾、围挡封闭等 10 条） | **不知道是什么场景、要求全面看一遍时** |
+| 留空 / `auto` | `AUTO` | 同样按家族分路的全部可查主体，由模型先在图里找出有哪些主体 | 自动模式 |
+
+三点说明：
+
+1. **`施工现场综合安全` 就是"综合"那一档。** 它不再只查"图片中人员"这一项，而是把全部家族的
+   可查主体按并发路数分摊给四路，四路合起来覆盖 62 个主体，模型看到哪个才核对哪个。
+2. **给了具体场景 ≠ 查得更少。** 具体场景拿的是该场景的专属主体，比综合场景的通用集合更聚焦。
+   能确定场景就传具体场景，能确定型式（脚手架）就传型式。
+3. **场景值不改变输出格式，也不改变延迟预算。** 任何场景取值下，接口都在同一时间预算内返回；
+   传错的场景只会让提示词偏题，不会让接口变慢或变形。
 
 ## 0. 仓库结构
 
@@ -605,87 +618,228 @@ HTTP `200`，JSON 字段如下：
   "status": "success",
   "format_version": "1.3",
   "output_format": "structured_json",
-  "model": "deepseek-flash",
-  "scene": "施工现场综合安全",
-  "scene_type": "GENERAL_SITE",
-  "scene_hint": null,
-  "scene_confidence": 0.91,
-  "scene_evidence": ["主体设备结构", "设备用途标识"],
-  "image": {
-    "width": 2000,
-    "height": 1000,
-    "coordinate_origin": "top_left",
-    "coordinate_unit": "pixel"
-  },
-  "elapsed_seconds": 5.23,
-  "issue_count": 1,
-  "objects": [],
-  "persons": [
-    {
-      "person_id": "P1",
-      "body_visibility": {"head": "complete", "left_hand": "partial", "right_hand": "occluded"},
-      "hand_ppe_states": {"left_glove": "uncertain", "right_glove": "uncertain"},
-      "ppe_states": {"helmet": "worn", "gloves": "uncertain"},
-      "support_surface": "地面",
-      "elevation_state": "GROUND_LEVEL"
-    }
+  "branches": 4,
+  "branch_status": [
+    "success",
+    "success",
+    "success",
+    "success"
   ],
+  "branch_messages": [],
+  "scene": "临时用电/配电箱",
+  "model_detected_scene": "TEMPORARY_ELECTRICITY",
+  "image": {
+    "width": 828,
+    "height": 1104
+  },
   "issues": [
     {
-      "item": "吊物下方人员停留",
-      "status": "SUSPECTED",
-      "risk_category": "LIFTING_OPERATIONS",
-      "risk_key": "PERSON_UNDER_SUSPENDED_LOAD",
-      "target": "吊物下方人员",
-      "position": "图片中的位置",
-      "evidence": "图片中可直接观察到的现象",
+      "status": "CLEAR",
+      "item": "升降机层门开启无防护",
+      "risk_category": "CONSTRUCTION_HOIST",
+      "risk_key": "HOIST_LANDING_DOOR_OPEN",
+      "assessment_type": "OTHER",
+      "claim_type": "OTHER",
+      "object_ids": [
+        "O3",
+        "O4"
+      ],
+      "person_ids": [],
+      "person_id": null,
+      "ppe_item": "not_applicable",
+      "focus_body_parts": [],
+      "spatial_relation": {
+        "subject_anchor": "层门开口",
+        "reference_object": "楼层平台",
+        "reference_anchor": "",
+        "both_anchors_visible": true,
+        "elevation_state": "ELEVATED_WITH_FALL_RISK",
+        "reference_state": "STATIC",
+        "person_zone": "OUTSIDE",
+        "cues": [
+          "层门敞开",
+          "洞口外露"
+        ]
+      },
+      "claim_validation": {
+        "target_identity_confirmed": true,
+        "component_boundary_complete": true,
+        "inspection_region_complete": true,
+        "positive_cues": [
+          "门板移开",
+          "开口可见"
+        ],
+        "alternative_explanation": "层门为关闭状态",
+        "alternative_excluded": true,
+        "subject_anchor": "层门",
+        "reference_anchor": "平台边",
+        "relation": "OVERLAP"
+      },
+      "target": "楼层停层层门",
+      "position": "中部楼层",
+      "evidence": "多层停层处蓝色层门敞开，露出楼层洞口，无临边防护",
+      "visual_cues": [
+        "门板移开",
+        "洞口外露"
+      ],
+      "regulation": {
+        "regulation_id": "GB10055-2007-5.1.1(1)@enclosure_visual_6767411",
+        "standard_name": "施工升降机安全规程",
+        "standard_code": "GB 10055—2007",
+        "article": "第5.1.1条",
+        "clause_text": "5.1.1 各停层处应设置层门。",
+        "effective_date": "GB 10055—2007 版次（规则包未记录实施日期，引用前须核对）",
+        "version_status": "current_per_project_rulepack",
+        "source_url": "data/rulepack/rulepack_snapshot.json#GB10055-2007-5.1.1(1)@enclosure_visual_6767411",
+        "official_source_url": null,
+        "catalog_verification": "条款编号与条文文本来自本组规则包快照（rulepack.sqlite3），本项目未逐条比对官方发布文本；使用前须核对标准现行版本、条号与适用条件。",
+        "catalog_verified_as_of": "2026-10-26",
+        "source_authority": "project_rulepack_snapshot",
+        "citation_ready": true,
+        "judge_boundary": {
+          "compliant": "已确认本停层对应层门存在。",
+          "non_compliant": "本停层全部门配置与收纳位置核清且无门。",
+          "doubtful": "证据不足：无法确认停层、门对应或缺失范围。"
+        },
+        "disposal_suggestion": "在未设层门的停层处设置层门。",
+        "source": "local_verified_catalog",
+        "verification_required": false
+      },
+      "confidence": 0.8,
+      "target_visibility": "complete",
+      "evidence_level": "direct",
+      "citation_confidence": "high",
+      "needs_review": false,
       "model_regulation_candidate": {
-        "standard_name": "模型建议的规范",
-        "standard_code": "模型建议编号",
-        "article": "模型建议条款",
+        "standard_name": "",
+        "standard_code": "JGJ 215-2010",
+        "article": "NEEDS_VERIFICATION",
+        "clause_summary": "",
+        "match_reason": "",
+        "match_status": "NEEDS_VERIFICATION",
         "source": "model_internal_knowledge",
         "verification_required": true
       },
       "verified_regulation": {
-        "regulation_id": "LIFTING_EXCLUSION_ZONE",
-        "standard_name": "建筑与市政施工现场安全卫生与职业健康通用规范",
-        "standard_code": "GB 55034-2022",
-        "article": "第3.4.1条",
-        "clause_text": "吊装作业前应设置安全保护区域……",
+        "regulation_id": "GB10055-2007-5.1.1(1)@enclosure_visual_6767411",
+        "standard_name": "施工升降机安全规程",
+        "standard_code": "GB 10055—2007",
+        "article": "第5.1.1条",
+        "clause_text": "5.1.1 各停层处应设置层门。",
+        "effective_date": "GB 10055—2007 版次（规则包未记录实施日期，引用前须核对）",
+        "version_status": "current_per_project_rulepack",
+        "source_url": "data/rulepack/rulepack_snapshot.json#GB10055-2007-5.1.1(1)@enclosure_visual_6767411",
+        "official_source_url": null,
+        "catalog_verification": "条款编号与条文文本来自本组规则包快照（rulepack.sqlite3），本项目未逐条比对官方发布文本；使用前须核对标准现行版本、条号与适用条件。",
+        "catalog_verified_as_of": "2026-10-26",
+        "source_authority": "project_rulepack_snapshot",
+        "citation_ready": true,
+        "judge_boundary": {
+          "compliant": "已确认本停层对应层门存在。",
+          "non_compliant": "本停层全部门配置与收纳位置核清且无门。",
+          "doubtful": "证据不足：无法确认停层、门对应或缺失范围。"
+        },
+        "disposal_suggestion": "在未设层门的停层处设置层门。",
         "source": "local_verified_catalog",
         "verification_required": false
       },
       "regulation_match": {
-        "method": "risk_key",
-        "confidence": 0.95,
-        "verified": true
+        "method": "risk_alias",
+        "confidence": 0.88,
+        "verified": true,
+        "catalog_regulation_id": "GB10055-2007-5.1.1(1)@enclosure_visual_6767411",
+        "verification_level": "risk_alias",
+        "note": "风险描述与本地风险别名直接对应。"
       },
-      "regulation": {
-        "regulation_id": "LIFTING_EXCLUSION_ZONE",
-        "standard_code": "GB 55034-2022",
-        "article": "第3.4.1条"
-      },
-      "rule": "本地已核验的规范名称、编号、条款、条文和来源",
-      "confidence": 0.82,
-      "bbox_2d_1000": [100, 200, 400, 650],
+      "model_regulation_candidate_text": null,
+      "regulation_status": "VERIFIED",
+      "has_verified_regulation": true,
+      "regulation_verification_level": "risk_alias",
+      "rule": "《施工升降机安全规程》GB 10055—2007 第5.1.1条：5.1.1 各停层处应设置层门。（来源：data/rulepack/rulepack_snapshot.json#GB10055-2007-5.1.1(1)@enclosure_visual_6767411；目录核验日期：2026-10-26）",
+      "review_reason": null,
+      "bbox_2d_1000": [
+        300,
+        290,
+        400,
+        400
+      ],
       "bbox_original_px": {
-        "x": 200,
-        "y": 200,
-        "width": 600,
-        "height": 450,
-        "image_width": 2000,
-        "image_height": 1000
+        "x": 248,
+        "y": 320,
+        "width": 84,
+        "height": 122,
+        "image_width": 828,
+        "image_height": 1104
       }
     }
   ],
-  "warnings": [],
-  "timings": {}
+  "report": "报告格式版本：1.3\n检测模型：DeepSeek Flash（单模型单次视觉检测）\n检查场景：临时用电/配电箱\n规范匹配方式：DeepSeek给出候选，本地已核验现行法规目录负责核验与规范化\n原图尺寸：828 × 1104 像素\n检测结果：……（完整报告见 report 字段）",
+  "timings": {
+    "deepseek_vision": 3.6378,
+    "total": 3.7163,
+    "token_usage": {
+      "prompt_tokens": 15522,
+      "completion_tokens": 2538,
+      "cache_hit_tokens": 14848,
+      "cache_miss_tokens": 674
+    }
+  }
 }
 ```
 
 `bbox_2d_1000` 是模型对整张图估计的归一化 `[x1,y1,x2,y2]`；`bbox_original_px` 是程序换算到 EXIF 方向校正后的原图像素坐标，`x,y` 为左上角，`width,height` 为框宽和框高。无法可靠定位时两者均为 `null`。调用方画框时应使用 `bbox_original_px` 并按 `image.width`、`image.height` 校验边界。
 
 错误响应采用 FastAPI 标准格式，例如 `{"detail":"..."}`。常见 HTTP 状态码为 `400`（空文件或非法裁剪坐标）、`401`（访问令牌错误）、`413`（文件过大）、`415`（不支持的图片格式）、`429`（并发繁忙）、`502`（模型流程失败）、`504`（处理超时）。
+
+#### 响应字段说明
+
+| 字段 | 类型 | 含义 |
+|---|---|---|
+| `status` | string | 固定为 `success`，失败时接口返回 HTTP 错误码而非本字段 |
+| `format_version` | string | 报告格式版本，当前 `1.3` |
+| `output_format` | string | 固定 `structured_json`，表示结果已结构化 |
+| `branches` | int | 本次检测并发分路数，当前 4 |
+| `branch_status` | string[] | 每一路的执行结果，全为 `success` 表示四路都出结果 |
+| `branch_messages` | string[] | 各路的异常信息，正常为空 |
+| `scene` | string | 本次使用的检查场景名（来自请求参数或模型判定） |
+| `model_detected_scene` | string | 模型自己识别出的场景键 |
+| `image.width` / `image.height` | int | **经 EXIF 方向校正后**的原图像素尺寸 |
+| `issues[]` | object[] | 风险项列表，每项含违规描述、证据、法规、范围框（见下表） |
+| `report` | string | 完整的中文检查报告文本（Markdown 风格纯文本） |
+| `timings` | object | 各阶段耗时与 token 用量，`timings.total` 为本次总耗时 |
+
+`issues[]` 中对接方最常用的字段：
+
+| 字段 | 含义 |
+|---|---|
+| `status` | `CLEAR` / `SUSPECTED` / `NOT_ASSESSABLE`，是否确认违规 |
+| `item` / `evidence` | 违规项名称与图中直接可见的现象 |
+| `risk_category` / `risk_key` | 场景键与稳定风险键，便于对接方做二次统计 |
+| `bbox_original_px` | 原图像素坐标 `{x, y, width, height}`，`x`/`y` 为左上角 |
+| `bbox_2d_1000` | 整图 0–1000 归一化坐标 `[x1, y1, x2, y2]` |
+| `regulation` / `verified_regulation` | 回填后的标准编号、条号、条文与来源 |
+| `regulation_status` / `has_verified_regulation` | 该条是否已在本地目录核验通过 |
+| `model_regulation_candidate` | 模型自己提出的候选条款，仅作参考，未经核验不可直接引用 |
+
+#### 幂等缓存
+
+视觉模型在服务端并发批处理下不是确定性的：同一张图重复检测两次，输出的风险项列表可能不同
+（实测 70 张重复跑，没有一张的风险项集合完全相同）。巡检业务要求同一张照片的结论稳定，
+所以接口按「图片内容 SHA-256 + 场景 + 附加指令 + 裁剪参数」做键缓存检测结果。
+
+| 行为 | 说明 |
+|---|---|
+| 首次请求 | 正常检测，响应头 `X-Cache: MISS` |
+| 相同参数重复请求 | 直接返回上次结果，响应头 `X-Cache: HIT`，不调用模型、不消耗额度 |
+| 不同图片／不同场景／不同指令 | 视为不同请求，正常检测 |
+
+响应体不因缓存而改变，调用方无需改动。相关配置（可写入 `.env`）：
+
+| 配置项 | 默认 | 说明 |
+|---|---|---|
+| `API_RESULT_CACHE` | `1` | 设为 `0` 关闭缓存 |
+| `API_RESULT_CACHE_TTL` | `3600` | 缓存有效期（秒） |
+| `API_RESULT_CACHE_MAX` | `256` | 最多缓存多少条，超出按最旧淘汰 |
 
 **这个对外契约是对接方已经依赖的，不要改成返回检测脚本的原始 JSON。** 检测脚本内部的结构化错误
 （`status` / `error.type` / `error.message`）由 API 读取后翻译成 `detail` 文本与状态码：

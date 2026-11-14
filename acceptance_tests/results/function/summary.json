@@ -1,0 +1,79 @@
+{
+  "total": 12,
+  "passed": 12,
+  "failed": 0,
+  "cases": [
+    {
+      "case_id": "TC-F01",
+      "name": "单张施工图片检测（正常输入）",
+      "conclusion": "通过",
+      "note": "输出结构完整"
+    },
+    {
+      "case_id": "TC-F02",
+      "name": "场景参数传入与生效",
+      "conclusion": "通过",
+      "note": "scene_hint=None"
+    },
+    {
+      "case_id": "TC-F03",
+      "name": "自定义检查指令传入",
+      "conclusion": "通过",
+      "note": ""
+    },
+    {
+      "case_id": "TC-F04",
+      "name": "局部图裁剪参数合法值",
+      "conclusion": "通过",
+      "note": ""
+    },
+    {
+      "case_id": "TC-F05",
+      "name": "局部图裁剪参数越界",
+      "conclusion": "通过",
+      "note": ""
+    },
+    {
+      "case_id": "TC-F06",
+      "name": "空文件上传",
+      "conclusion": "通过",
+      "note": ""
+    },
+    {
+      "case_id": "TC-F07",
+      "name": "非图片文件上传",
+      "conclusion": "通过",
+      "note": ""
+    },
+    {
+      "case_id": "TC-F08",
+      "name": "损坏图片文件",
+      "conclusion": "通过",
+      "note": ""
+    },
+    {
+      "case_id": "TC-F09",
+      "name": "文件超过上传上限",
+      "conclusion": "通过",
+      "note": ""
+    },
+    {
+      "case_id": "TC-F10",
+      "name": "缺少必填图片字段",
+      "conclusion": "通过",
+      "note": ""
+    },
+    {
+      "case_id": "TC-F11",
+      "name": "服务健康检查",
+      "conclusion": "通过",
+      "note": ""
+    },
+    {
+      "case_id": "TC-F12",
+      "name": "风险项条款回填与核验标记",
+      "conclusion": "通过",
+      "note": "本地核验条款 4 条，待核验 2 条"
+    }
+  ]
+}
