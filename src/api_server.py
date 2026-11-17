@@ -285,7 +285,12 @@ async def inspect_image(
             raise _process_failure(completed, result)
         if not isinstance(result, dict):
             raise HTTPException(status_code=502, detail="The inspection process returned invalid JSON.")
-        _cache_put(cache_key, result)
+        # A partial response is useful to the caller, but caching it would
+        # preserve a transient branch failure for the entire TTL. Only cache
+        # complete inspections (older single-branch responses have no marker
+        # and remain cache-compatible).
+        if result.get("completion_status") != "partial":
+            _cache_put(cache_key, result)
         return JSONResponse(result, headers={"X-Cache": "MISS"})
     finally:
         REQUEST_SLOTS.release()

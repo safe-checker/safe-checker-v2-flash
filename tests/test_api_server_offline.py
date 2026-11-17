@@ -88,6 +88,23 @@ class ApiResultCacheTests(unittest.TestCase):
         self.assertEqual(response.headers.get("X-Cache"), "MISS")
         run.assert_called_once()
 
+    def test_partial_branch_result_is_not_cached(self):
+        self.payload = {
+            "status": "success",
+            "completion_status": "partial",
+            "issues": [],
+            "issue_count": 0,
+        }
+        first, run_first = self._post(self.image)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.headers.get("X-Cache"), "MISS")
+        run_first.assert_called_once()
+
+        second, run_second = self._post(self.image)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.headers.get("X-Cache"), "MISS")
+        run_second.assert_called_once()
+
 
 class ApiErrorTests(unittest.TestCase):
     def setUp(self):

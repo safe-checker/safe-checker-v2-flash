@@ -2982,6 +2982,7 @@ def run_branches(args: argparse.Namespace, image_path: Path) -> int:
     """
     started = time.perf_counter()
     groups = max(1, min(int(args.branches), 8))
+    output_dir = Path(args.output_dir).expanduser().resolve()
     scene_override = args.scene.strip() or None
     requested_scene = normalize_scene(args.scene)
     model = os.getenv("DEEPSEEK_MODEL", "deepseek-flash").strip()
@@ -2991,21 +2992,54 @@ def run_branches(args: argparse.Namespace, image_path: Path) -> int:
     jpeg_quality = env_int("JPEG_QUALITY", 70)
     image_detail = os.getenv("IMAGE_DETAIL", "low").strip()
     max_edge, image_detail = scene_image_settings(requested_scene, max_edge, image_detail)
+    high_detail_min_edge = env_int("IMAGE_DETAIL_HIGH_MIN_EDGE", 1600)
+    detail_image_detail = os.getenv("DETAIL_CROP_IMAGE_DETAIL", "").strip() or None
+    detail_crop_setting = (
+        args.detail_crop.strip()
+        or os.getenv("DETAIL_CROP", "off").strip()
+        or "off"
+    )
+    detail_crop_max_edge = env_int("DETAIL_CROP_MAX_EDGE", max_edge)
     max_tokens = env_int("SINGLE_MODEL_MAX_TOKENS", env_int("MAX_TOKENS", 2200))
     temperature = env_float("TEMPERATURE", 0.0)
     reasoning_effort = os.getenv("REASONING_EFFORT", "none").strip().lower()
     compact_output = os.getenv("OUTPUT_MODE", "compact").strip().lower() != "full"
 
-    api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
-    if not api_key or api_key.startswith("sk-你的"):
-        emit_cli_error(args, "missing_api_key", "Please set DEEPSEEK_API_KEY in .env first.")
+    if reasoning_effort not in {"none", "low", "high", "max"}:
+        emit_cli_error(args, "invalid_configuration",
+                       "REASONING_EFFORT must be none, low, high, or max.")
+        return 2
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        emit_cli_error(args, "invalid_configuration",
+                       "REQUEST_TIMEOUT_SECONDS must be finite and positive.")
         return 2
 
+    preprocess_started = time.perf_counter()
     with Image.open(image_path) as source:
         image = ImageOps.exif_transpose(source).convert("RGB")
         image_size = image.size
         local_quality = analyze_pil_image_quality(image)
         image_data_url = image_to_data_url(image, max_edge=max_edge, quality=jpeg_quality)
+        detail_crop_box = (
+            select_auto_crop_from_image(image)
+            if detail_crop_setting.lower() == "auto"
+            else parse_detail_crop(detail_crop_setting, image_size)
+        )
+        detail_image_data_url = (
+            image_to_data_url(
+                image.crop(detail_crop_box), max_edge=detail_crop_max_edge,
+                quality=jpeg_quality,
+            )
+            if detail_crop_box is not None
+            else None
+        )
+    detail_crop_box_1000 = (
+        crop_box_to_1000(detail_crop_box, image_size)
+        if detail_crop_box is not None
+        else None
+    )
+    if image_detail == "adaptive":
+        image_detail = "high" if max(image_size) > high_detail_min_edge else "low"
 
     payloads: list[dict[str, Any]] = []
     prompts: list[str] = []
@@ -3033,6 +3067,9 @@ def run_branches(args: argparse.Namespace, image_path: Path) -> int:
                 max_tokens=max_tokens,
                 temperature=temperature,
                 reasoning_effort=reasoning_effort,
+                detail_image_data_url=detail_image_data_url,
+                detail_image_detail=detail_image_detail,
+                detail_crop_box_1000=detail_crop_box_1000,
             ))
     finally:
         if previous_group is None:
@@ -3040,8 +3077,59 @@ def run_branches(args: argparse.Namespace, image_path: Path) -> int:
         else:
             os.environ["CHECKLIST_SUBJECT_GROUP"] = previous_group
 
+    preprocess_elapsed = time.perf_counter() - preprocess_started
+    detail_crop_payload = {
+        "mode": detail_crop_setting if detail_image_data_url else "off",
+        "bbox_2d_1000": detail_crop_box_1000,
+        "bbox_original_px": (
+            {
+                "x": detail_crop_box[0],
+                "y": detail_crop_box[1],
+                "width": detail_crop_box[2] - detail_crop_box[0],
+                "height": detail_crop_box[3] - detail_crop_box[1],
+            }
+            if detail_crop_box is not None
+            else None
+        ),
+    }
+    if args.dry_run:
+        dry_result = {
+            "status": "dry_run_ok",
+            "format_version": "1.3",
+            "model": model,
+            "branches": groups,
+            "vision_calls": groups,
+            "image_inputs": 2 if detail_image_data_url else 1,
+            "input_strategy": "full_plus_detail_crop" if detail_image_data_url else "full_image_only",
+            "detail_crop": detail_crop_payload,
+            "scene": get_scene_profile(requested_scene)["label"],
+            "image": {"path": str(image_path), "width": image_size[0], "height": image_size[1]},
+            "config": {
+                "max_image_edge": max_edge,
+                "reasoning_effort": reasoning_effort,
+                "max_tokens": max_tokens,
+                "timeout_seconds": timeout_seconds,
+            },
+            "timings": {"preprocess": round(preprocess_elapsed, 4)},
+        }
+        if args.json_output:
+            print(json.dumps(dry_result, ensure_ascii=False, indent=2))
+        else:
+            print("DRY RUN OK")
+            print(json.dumps(dry_result, ensure_ascii=False, indent=2))
+        return 0
+
+    api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+    if not api_key or api_key.startswith("sk-你的"):
+        emit_cli_error(args, "missing_api_key", "Please set DEEPSEEK_API_KEY in .env first.")
+        return 2
+
     model_timeout = env_float("DEEPSEEK_VISION_TIMEOUT_SECONDS",
                               max(1.0, timeout_seconds - 0.55))
+    if not math.isfinite(model_timeout) or model_timeout <= 0:
+        emit_cli_error(args, "invalid_configuration",
+                       "DEEPSEEK_VISION_TIMEOUT_SECONDS must be finite and positive.")
+        return 2
     elapsed_before = time.perf_counter() - started
     model_timeout = min(model_timeout, max(1.0, timeout_seconds - elapsed_before - 0.35))
     call_started = time.perf_counter()
@@ -3057,6 +3145,7 @@ def run_branches(args: argparse.Namespace, image_path: Path) -> int:
         return 1
     model_elapsed = time.perf_counter() - call_started
 
+    parse_started = time.perf_counter()
     branch_payloads: list[dict[str, Any]] = []
     branch_status: list[str] = []
     token_usage = {"prompt_tokens": 0, "completion_tokens": 0,
@@ -3108,9 +3197,46 @@ def run_branches(args: argparse.Namespace, image_path: Path) -> int:
     merged = _merge_branch_issues(branch_payloads)
     ok = [payload for payload in branch_payloads if payload.get("issues") is not None
           and "error" not in payload]
+    parse_elapsed = time.perf_counter() - parse_started
+    if not ok:
+        if "insufficient_balance" in branch_status:
+            error_type = "insufficient_balance"
+        elif "timeout" in branch_status:
+            error_type = "timeout"
+        elif "network_error" in branch_status:
+            error_type = "network_error"
+        else:
+            error_type = "processing_error"
+        message = "; ".join(message for message in branch_messages if message)[:1200]
+        failure = {
+            "status": "error",
+            "format_version": "1.3",
+            "output_format": "structured_json",
+            "branches": groups,
+            "branch_status": branch_status,
+            "branch_messages": branch_messages,
+            "error": {
+                "type": error_type,
+                "message": message or "All inspection branches failed.",
+            },
+            "timings": {
+                "preprocess": round(preprocess_elapsed, 4),
+                "deepseek_vision": round(model_elapsed, 4),
+                "parse_normalize": round(parse_elapsed, 4),
+                "total": round(time.perf_counter() - started, 4),
+                "token_usage": token_usage,
+            },
+        }
+        if args.json_output:
+            print(json.dumps(failure, ensure_ascii=False, indent=2))
+        else:
+            print(f"检测失败：{failure['error']['message']}")
+        return 1
+
     detected = dict(ok[0]) if ok else {}
     detected["issues"] = merged
     detected.setdefault("scene_type", requested_scene if requested_scene != "AUTO" else "GENERAL_SITE")
+    report_started = time.perf_counter()
     elapsed = time.perf_counter() - started
     report = model_judged_report(
         detected,
@@ -3119,36 +3245,72 @@ def run_branches(args: argparse.Namespace, image_path: Path) -> int:
         scene=detected.get("scene_type"),
         prompt=args.prompt,
     )
+    report_elapsed = time.perf_counter() - report_started
+    completion_status = "complete" if len(ok) == groups else "partial"
+    timings = {
+        "preprocess": round(preprocess_elapsed, 4),
+        "deepseek_vision": round(model_elapsed, 4),
+        "parse_normalize": round(parse_elapsed, 4),
+        "report_format": round(report_elapsed, 4),
+        "total": round(time.perf_counter() - started, 4),
+        "token_usage": token_usage,
+    }
+    if args.show_timing:
+        report += "\n\n时间分配：\n"
+        report += f"- 图片预处理与请求构造：{timings['preprocess']:.3f} 秒\n"
+        report += f"- DeepSeek Flash {groups}路并发检测：{timings['deepseek_vision']:.3f} 秒\n"
+        report += f"- JSON解析、法规核验与合并：{timings['parse_normalize']:.3f} 秒\n"
+        report += f"- 报告格式化：{timings['report_format']:.3f} 秒\n"
+        report += f"- 总耗时：{timings['total']:.3f} 秒"
     result = {
-        "status": "success" if merged else "error",
+        # A valid empty issue list means the inspection completed and found no
+        # visible risks; it is not a processing failure.
+        "status": "success",
+        "completion_status": completion_status,
         "format_version": "1.3",
         "output_format": "structured_json",
         "branches": groups,
+        "successful_branches": len(ok),
         "branch_status": branch_status,
         "branch_messages": branch_messages,
+        "model": model,
+        "vision_calls": groups,
+        "image_inputs": 2 if detail_image_data_url else 1,
+        "input_strategy": "full_plus_detail_crop" if detail_image_data_url else "full_image_only",
+        "detail_crop": detail_crop_payload,
         "issues": merged,
         "scene": detected.get("scene"),
         "model_detected_scene": detected.get("scene_type"),
         "image": {"path": str(image_path), "width": image_size[0], "height": image_size[1]},
-        "timings": {
-            "deepseek_vision": round(model_elapsed, 4),
-            "total": round(elapsed, 4),
-            "token_usage": token_usage,
-        },
+        "issue_count": len(merged),
+        "warnings": ([f"仅{len(ok)}/{groups}路检测成功，结果可用但检查覆盖不完整。"]
+                     if completion_status == "partial" else []),
+        "timings": timings,
         "report": report,
     }
     if args.json_output:
+        if not args.no_save:
+            saved_path = save_json_result(output_dir, image_path=image_path, payload=result)
+            result["saved_path"] = str(saved_path)
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
+        if not args.no_save:
+            saved_path = save_result(output_dir, image_path=image_path,
+                                     content=report, elapsed=timings["total"])
+            print(f"结果已保存：{saved_path}")
         print(report)
-    return 0 if merged else 1
+    return 0
 
 
 def main() -> int:
     load_dotenv(_find_env_file())
     args = parse_args()
     if int(args.branches) > 1:
-        return run_branches(args, Path(args.image).expanduser().resolve())
+        try:
+            return run_branches(args, Path(args.image).expanduser().resolve())
+        except (OSError, ValueError) as exc:
+            emit_cli_error(args, "invalid_input", str(exc))
+            return 2
     image_path = Path(args.image).expanduser().resolve()
     output_dir = Path(args.output_dir).expanduser().resolve()
     requested_scene = normalize_scene(args.scene)

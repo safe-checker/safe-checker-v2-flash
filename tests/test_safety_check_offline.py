@@ -1813,3 +1813,133 @@ class ModelQuotaTests(unittest.TestCase):
                 self.assertRaises(httpx.HTTPStatusError):
             call_deepseek({}, "key", "https://example.invalid", timeout_seconds=5.0)
         self.assertEqual(client.post.await_count, 1)
+
+
+class ParallelBranchContractTests(unittest.TestCase):
+    """The four-branch CLI must honor the same public contract as one branch."""
+
+    def _args(self, output_dir: str, **overrides):
+        values = {
+            "branches": 4,
+            "scene": "施工用电",
+            "prompt": "检查可见安全隐患",
+            "output_dir": output_dir,
+            "no_save": True,
+            "dry_run": False,
+            "show_timing": False,
+            "detail_crop": "",
+            "json_output": True,
+        }
+        values.update(overrides)
+        return SimpleNamespace(**values)
+
+    @staticmethod
+    def _success_result():
+        return ("{}", 1, {
+            "prompt_tokens": 1,
+            "completion_tokens": 1,
+            "cache_hit_tokens": 0,
+            "cache_miss_tokens": 1,
+        })
+
+    def _run(self, directory: str, fake_many, **overrides):
+        import safety_check as checker
+
+        image_path = Path(directory) / "frame.png"
+        Image.new("RGB", (120, 80), "gray").save(image_path)
+        output = io.StringIO()
+        args = self._args(str(Path(directory) / "outputs"), **overrides)
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-key"}), \
+                patch("safety_check.call_deepseek_many", side_effect=fake_many), \
+                redirect_stdout(output):
+            return checker.run_branches(args, image_path), json.loads(output.getvalue()), args
+
+    def test_dry_run_never_calls_the_model(self) -> None:
+        async def must_not_run(*args, **kwargs):
+            raise AssertionError("dry-run called the model")
+
+        with tempfile.TemporaryDirectory() as directory:
+            code, result, _ = self._run(
+                directory, must_not_run, dry_run=True,
+                detail_crop="0,0,500,1000",
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(result["status"], "dry_run_ok")
+        self.assertEqual(result["branches"], 4)
+        self.assertEqual(result["image_inputs"], 2)
+
+    def test_invalid_crop_is_a_structured_cli_error(self) -> None:
+        import safety_check as checker
+
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "frame.png"
+            Image.new("RGB", (120, 80), "gray").save(image_path)
+            output = io.StringIO()
+            with patch("sys.argv", [
+                    "safety_check.py", str(image_path), "--branches", "4",
+                    "--detail-crop", "900,900,100,100", "--dry-run",
+                    "--no-save",
+                ]), redirect_stdout(output):
+                code = checker.main()
+        result = json.loads(output.getvalue())
+        self.assertEqual(code, 2)
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["error"]["type"], "invalid_input")
+
+    def test_valid_empty_report_is_success(self) -> None:
+        async def all_clear(payloads, **kwargs):
+            return [self._success_result() for _ in payloads]
+
+        with tempfile.TemporaryDirectory() as directory:
+            code, result, _ = self._run(directory, all_clear)
+        self.assertEqual(code, 0)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["completion_status"], "complete")
+        self.assertEqual(result["issue_count"], 0)
+        self.assertEqual(result["issues"], [])
+
+    def test_partial_success_is_explicit_but_usable(self) -> None:
+        async def partly_clear(payloads, **kwargs):
+            return [self._success_result(), self._success_result(),
+                    ModelBudgetExhausted("branch timed out"), self._success_result()]
+
+        with tempfile.TemporaryDirectory() as directory:
+            code, result, _ = self._run(directory, partly_clear)
+        self.assertEqual(code, 0)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["completion_status"], "partial")
+        self.assertEqual(result["successful_branches"], 3)
+        self.assertTrue(result["warnings"])
+
+    def test_all_timeouts_return_retryable_structured_error(self) -> None:
+        async def all_timeout(payloads, **kwargs):
+            return [ModelBudgetExhausted("branch timed out") for _ in payloads]
+
+        with tempfile.TemporaryDirectory() as directory:
+            code, result, _ = self._run(directory, all_timeout)
+        self.assertEqual(code, 1)
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["error"]["type"], "timeout")
+        self.assertEqual(result["branch_status"], ["timeout"] * 4)
+
+    def test_crop_is_sent_to_every_branch_and_json_is_saved(self) -> None:
+        captured = []
+
+        async def capture(payloads, **kwargs):
+            captured.extend(payloads)
+            return [self._success_result() for _ in payloads]
+
+        with tempfile.TemporaryDirectory() as directory:
+            code, result, args = self._run(
+                directory, capture, no_save=False,
+                detail_crop="0,0,500,1000", show_timing=True,
+            )
+            saved = Path(result["saved_path"])
+            self.assertTrue(saved.is_file())
+            self.assertEqual(saved.parent.resolve(), Path(args.output_dir).resolve())
+        self.assertEqual(code, 0)
+        self.assertEqual(len(captured), 4)
+        for payload in captured:
+            content = payload["messages"][1]["content"]
+            self.assertEqual(sum(row.get("type") == "image_url" for row in content), 2)
+        self.assertIn("时间分配", result["report"])
